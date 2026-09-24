@@ -9,7 +9,7 @@
 > detected and corrected, tool output is pre-digested so it cannot be misread, and a turn that used
 > tools cannot end until a self-review agrees it answered the request. Offline, no telemetry, MIT.
 
-`Node 22+` · `Electron 33` · `TypeScript 5.7` · `MIT` · `9 个工具` · `131 条核心断言`
+`Node 22+` · `Electron 33` · `TypeScript 5.7` · `MIT` · `11 个工具` · `169 条核心断言`
 
 ## 技术底座
 
@@ -59,6 +59,7 @@
 | **搜不到就断言"代码里没有"** | 工具输出的形状：`grep` 扫过 0 个文件时单独报 `Nothing was searched`，**绝不出现 "No matches"** |
 | 中文提问 ↔ 英文标识符，`grep` 没有共享 token | `search` 工具：bge-m3 向量检索兜住语义这一路 |
 | 长对话后凭记忆答话，把**别的项目**的内容安到当前项目上 | 自动压缩：超过阈值就把前文折成摘要 |
+| **宣称删干净了，其实没删**：`del /q *.*` 无输出、exit 0，模型据此报告"已清空"——而 27 个文件只少了 2 个 | 两道防线：`delete` 工具走**系统回收站**（可恢复，且成败只认调用前后的文件系统事实，不采信平台报告）；`workspace/changes` 在轮末机器对账，把"这一轮到底动了哪些文件"作为**独立于命令输出**的证据交给审查器 |
 
 第一条通用规则是：**工具的输出形状决定模型的结论。** "什么都没查"和"查了没有"必须用不同的话说。
 
@@ -87,7 +88,7 @@ npm run check:all            # 全量健康检查（见「验证门」）
 
 ## 工具
 
-应用里接的是 9 个（`search` 需要嵌入模型才注册；不能用的工具不注册，因为死条目每一步都在烧 prompt token）：
+应用里接的是 11 个（`search` 需要嵌入模型才注册；不能用的工具不注册，因为死条目每一步都在烧 prompt token）：
 
 | 工具 | 作用 |
 |---|---|
@@ -96,10 +97,13 @@ npm run check:all            # 全量健康检查（见「验证门」）
 | `glob` | 按文件名找 |
 | `grep` | 按内容找。支持 `AI OR retry` 这类被模型当正则写的表达式；命中空集时说清是哪个环节挡住的 |
 | `search` | 语义检索（本地嵌入模型 + 进程内向量索引）：中文提问能命中英文标识符 |
-| `web` | DuckDuckGo 检索 + 抓正文。离线时明确报"连不上"，而不是装作没有这个工具 |
+| `web` | 联网检索 + 抓正文。搜索**Bing 优先、DuckDuckGo 兜底**（写死一个后端 = 一个单点故障）；失败时区分"完全没有路由"和"页面拿到了但解析不出"，因为下一步动作完全不同 |
+| `skill` | 载入 `.SKILL/` 里的过程性知识。目录（名字 + 描述）进系统提示词，正文只在模型决定用时才付 token；写坏的技能会**报到提示词里**，而不是静默忽略 |
+| `todo_write` | 模型自己的任务清单，整表替换。写进日志（`todo/write`），下一轮开始时清空 |
 | `edit` | 精确替换文件内容（需唯一匹配） |
 | `write` | 整份覆盖一个文件 |
-| `bash` | 执行命令。危险形状（`rm -rf`、`git push --force`、把下载直接管进 shell 等）**永远弹确认** |
+| `delete` | 把文件或目录移进**系统回收站**（可恢复）。每次调用都先问你、拒绝删工作目录本身、结果说"已移入回收站"而不说"已删除" |
+| `bash` | 执行命令。危险形状（`rm -rf`、`del`/`erase`/`rd`/`Remove-Item`、`git push --force`、把下载直接管进 shell 等）**永远弹确认** |
 
 工具注册顺序就是它出现在 prompt 里的顺序：**先读后写**，因为小模型大致按看到的顺序挑工具，而"改之前先读"是防住大部分破坏的习惯。
 
@@ -108,7 +112,7 @@ npm run check:all            # 全量健康检查（见「验证门」）
 **已经能用**
 
 - [x] 事件日志驱动的会话：append-only JSONL；编辑与压缩都是追加事件，取消/恢复/重放精确
-- [x] 9 个工具，含文档抽取（PDF 的 Flate 流、docx、GBK/UTF-8 编码探测）
+- [x] 11 个工具，含文档抽取（PDF 的 Flate 流、docx、GBK/UTF-8 编码探测）
 - [x] 三个守卫 + 自审门，每次判定都写进日志（`review/result`），事后可查"这轮为什么结束"
 - [x] 自动压缩、审批流程、路径约束（对最深已存在祖先 realpath，符号链接逃不出去）
 - [x] 工作目录绑定会话：侧栏按目录分组，目录之外的操作要审批
@@ -116,7 +120,7 @@ npm run check:all            # 全量健康检查（见「验证门」）
 - [x] 语义检索：本地嵌入模型 + 进程内向量索引 + size/mtime 指纹失效
 - [x] 个性化：称呼、自称、四种语气、追加风格要求
 - [x] 行内数学兜底（模型爱写 `$\rightarrow$`，翻译成 `→` 再渲染）
-- [x] 11 道验证门：131 条核心断言 + 4 道 CDP 探针 + 真 Ollama 端到端
+- [x] 13 道验证门：169 条核心断言 + 6 道 CDP 探针 + 真 Ollama 端到端
 
 **还没做**
 
@@ -126,6 +130,9 @@ npm run check:all            # 全量健康检查（见「验证门」）
 - [ ] **没有真实模型的自动回归。** `check:live` 要手动跑，且要本机有 Ollama
 - [ ] **"看项目"这类请求还没有 harness 驱动的递归读**（分层摘要挂在哪一层未定）
 - [ ] 侧栏折叠状态只在组件 state 里，切会话就丢
+- [ ] **大输出只剪枝、没有落盘**：被剪掉的原文还在日志里，但模型拿不到它（缺一个 `spill`）
+- [ ] **会话标题还是"第一句话截 48 字"**，没有让模型生成一次
+- [ ] **模型不能带选项提问**：有疑问只能写成一段话，用户还得自己组织答案
 
 ## 三个不能破的设计决策
 
@@ -170,6 +177,7 @@ npm run check:all            # 全量健康检查（见「验证门」）
 | L0 确定性项目地图 | `core/tools/repo-map.ts` | Aider 式：离线抽事实（pom 的 artifactId、package 依赖、Java 类的注解），挂进 `list` 输出。替代模型的"似乎是前端" |
 | 语义检索 | `core/tools/search.ts` | 中英错位。60 行一块、进程内索引、size+mtime 指纹失效、相似度下限 0.05（零相似结果不进榜单） |
 | 自动压缩 | `core/loop.ts` | 每轮开始前跑，超过阈值就把前文折成一段摘要追加 `session/compact`；**什么都不删**，fold 从该 seq 之后恢复 |
+| 工具结果剪枝 | `core/prune.ts` | **每一步**之前跑，且**不需要模型调用**（所以它进得了轮内，摘要进不去）：单个工具结果超阈值就只留首尾、中间换标记。原文仍在日志，被剪的只是下一次请求 |
 
 ## 目录结构
 
@@ -186,13 +194,16 @@ src/
       adapter.ts        LlmAdapter 基类
       ollama-adapter.ts Ollama 的 /api/chat（NDJSON）
       assembler.ts      把 StreamChunk 折成 content block
-    tools/           9 个工具 + 路径约束（paths.ts）
+    tools/           11 个工具 + 路径约束（paths.ts）
     loop.ts          agent 循环、守卫、自审门
     review.ts        自审门的判据与解析
     stall.ts         失效模式检测
     prompt.ts        系统提示词组装
     transcript.ts    审查用的平铺 transcript
     extract.ts       PDF / docx / 编码探测
+    prune.ts         每步之前剪掉过大的工具结果（不需要模型调用）
+    workspace.ts     轮首/轮末的目录快照，用来机器对账"这一轮改了哪些文件"
+    skills.ts        .SKILL/ 的发现、frontmatter 解析与载入
     session-store.ts  JSONL 持久化
   main/            Electron 主进程
     agent-service.ts  编排 loop + adapter + store
@@ -202,6 +213,7 @@ src/
   renderer/        React 界面
     hooks/useHarness.ts  把推送来的事件折成节点树
     components/          MessageList / Composer / Sidebar / 两个弹窗
+.SKILL/            过程性知识（一份格式说明 + 若干技能），见 .SKILL/README.md
 scripts/           验证门（见下节）+ 排查工具
 ```
 
@@ -218,7 +230,7 @@ npm run check:all
 | 命令 | 断言什么 |
 |---|---|
 | `typecheck` | 三个 TypeScript 项目全部通过 |
-| `check` | **131 条核心断言**：日志 fold、流式装配、参数校验、glob、分组、文档抽取、停滞/否认/空口断言检测、自审门、工具输出形状、preload 契约 |
+| `check` | **169 条核心断言**：日志 fold、流式装配、参数校验、glob、分组、文档抽取、停滞/否认/空口断言检测、自审门、工具输出形状、工具结果剪枝、改动快照、删除判据、技能发现、preload 契约 |
 | `check:cwd` | 工作目录由会话头决定，不是全局默认值（5 个 case，含目录已不存在的情形） |
 | `check:load` | 每个已安装的包真的能被 `require` |
 | `check:deps` | 每个包声明的入口在磁盘上真的存在 |
@@ -227,9 +239,11 @@ npm run check:all
 | `check:composer` | 输入框的真实尺寸、自增高、不早出滚动条 |
 | `check:sidebar` | 侧栏分组、弹出菜单不被裁切 |
 | `check:settings` | 设置弹窗真的能滚，且帧预算达标 |
+| `check:fold` | 长代码块默认折叠、短块保持展开（两个相反方向的回归都断言，只测一个等于没测） |
+| `check:changes` | 轮末的改动卡片按测量值渲染，空的那张会说"没有文件变动" |
 | `check:live` | 真 Ollama 端到端（需要本地模型） |
 
-其中**四道是 CDP 探针**（`check:render` / `check:composer` / `check:sidebar` / `check:settings`，都在 `scripts/probe-*.mjs`）：启动真应用、连上调试端口、向页面要**量出来的数字**而不是截图。它们存在的原因是——"窗口开了，但里面是空白"和"窗口开了，一切正常"在所有日志里长得一模一样。
+其中**六道是 CDP 探针**（`check:render` / `check:composer` / `check:sidebar` / `check:settings` / `check:fold` / `check:changes`，都在 `scripts/probe-*.mjs`）：启动真应用、连上调试端口、向页面要**量出来的数字**而不是截图。它们存在的原因是——"窗口开了，但里面是空白"和"窗口开了，一切正常"在所有日志里长得一模一样。
 
 排查模型行为用 `node scripts/inspect-session.mjs --list / --turns / --last N`：日志在 `%APPDATA%\ollama harness\sessions\<uuid>.jsonl`，**"没调用"和"调了失败"一眼能分**。
 
