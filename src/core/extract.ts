@@ -199,34 +199,111 @@ function describeOpaque(ext: string): string {
 }
 
 /**
+ * Share of the NON-ASCII bytes that may be invalid UTF-8 before the buffer is
+ * treated as some other code page.
+ *
+ * UTF-8 text scores ~0 (any valid sequence passes), while a GBK message scores
+ * well over half: GBK spreads Chinese across two bytes in a range that overlaps
+ * both the UTF-8 lead bytes and its continuation bytes, so most pairs fail. The
+ * gap between the two populations is wide enough that the exact number does not
+ * matter.
+ */
+const NON_UTF8_RATIO = 0.1
+
+/**
  * Decode bytes as text, honouring a BOM and falling back to GBK.
  *
  * Windows Chinese tooling still writes GBK, and decoding it as UTF-8 produces a
  * wall of replacement characters that reads as "corrupt file" rather than
  * "wrong encoding". `TextDecoder('gbk')` is available in Node's full-ICU build,
  * which Electron ships.
+ *
+ * The decision is made on the BYTES and not on the UTF-8 reading, which used to
+ * be measured for replacement characters. That measurement divided by the whole
+ * buffer, so unrelated output diluted it: cmd's `子目录或文件 … 已经存在。`
+ * measured 46 bad characters across ~1750 bytes of a Maven transcript, landed
+ * under the 2% threshold, and reached the model as `��Ŀ¼���ļ�` — the one
+ * useful line in the turn, delivered as unreadable boxes.
+ *
+ * `nonAsciiFailureRatio` fixes the direction of that error by counting only
+ * bytes >= 0x80 in the denominator. ASCII is valid in every encoding, so it can
+ * never make a GBK message look like UTF-8, whether ten ASCII bytes follow the
+ * message or ten thousand.
  */
 function decodeTextBuffer(utf8: string, buffer: Uint8Array): string {
   if (utf8.charCodeAt(0) === 0xfeff) return utf8.slice(1)
 
-  const window = Math.min(utf8.length, 4096)
-  if (window > 0) {
-    let replacements = 0
-    for (let i = 0; i < window; i++) {
-      if (utf8.charCodeAt(i) === 0xfffd) replacements++
-    }
-    // A stray replacement character happens in valid UTF-8; a dense run of them
-    // means the bytes were never UTF-8 to begin with.
-    if (replacements / window > 0.02) {
-      try {
-        const decoded = new TextDecoder('gbk').decode(buffer)
-        if (decoded.length > 0) return decoded
-      } catch {
-        // No GBK table in this build — the UTF-8 reading is all we have.
-      }
+  // Fast path first: the overwhelming majority of buffers are valid UTF-8, and
+  // the native decoder answers that in one pass without touching GBK.
+  if (isValidUtf8(buffer)) return utf8
+
+  if (nonAsciiFailureRatio(buffer) >= NON_UTF8_RATIO) {
+    try {
+      const decoded = new TextDecoder('gbk').decode(buffer)
+      if (decoded.length > 0) return decoded
+    } catch {
+      // No GBK table in this build — the UTF-8 reading is all we have.
     }
   }
   return utf8
+}
+
+/** True when the bytes are a well-formed UTF-8 sequence. */
+function isValidUtf8(buffer: Uint8Array): boolean {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Fraction of the high bytes that cannot be read as UTF-8.
+ *
+ * Walks the buffer as UTF-8 by hand rather than decoding it, because the answer
+ * needed is which BYTES failed, not what the failure rendered as. Bytes below
+ * 0x80 are skipped entirely and are neither counted nor charged — the point of
+ * the denominator being "non-ASCII bytes" is that a long ASCII tail cannot
+ * move the score up or down.
+ *
+ * On failure the walk advances a single byte, so a GBK character is judged
+ * twice rather than skipped wholesale. That is deliberate: it keeps the ratio
+ * near 1 for real GBK text, where `子目录` happens to hide a valid pair
+ * (`0xC4 0xBF` is a legal two-byte sequence) among the invalid ones.
+ */
+function nonAsciiFailureRatio(buffer: Uint8Array): number {
+  let high = 0
+  let failed = 0
+  let i = 0
+  while (i < buffer.length) {
+    const lead = buffer[i] ?? 0
+    if (lead < 0x80) {
+      i++
+      continue
+    }
+    high++
+    const need =
+      lead >= 0xc2 && lead <= 0xdf ? 1 : lead >= 0xe0 && lead <= 0xef ? 2 : lead >= 0xf0 && lead <= 0xf4 ? 3 : -1
+    let ok = need > 0
+    if (ok) {
+      for (let k = 1; k <= need; k++) {
+        const next = buffer[i + k]
+        if (next === undefined || next < 0x80 || next > 0xbf) {
+          ok = false
+          break
+        }
+        high++
+      }
+    }
+    if (!ok) {
+      failed++
+      i++
+      continue
+    }
+    i += need + 1
+  }
+  return high === 0 ? 0 : failed / high
 }
 
 /* ────────────────────────────────── ZIP / DOCX ────────────────────────────── */

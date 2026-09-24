@@ -847,6 +847,66 @@ test('decodeBytes recovers GBK without an extension to hint at it', () => {
   assert.equal(decodeBytes(new TextEncoder().encode('你好')), '你好')
 })
 
+test('a GBK message survives a long ASCII tail instead of diluting into mojibake', () => {
+  // The real bytes from the real session: cmd said the project directory already
+  // existed, in the middle of a Maven transcript. The check used to count
+  // replacement characters across the WHOLE buffer, so 46 bad ones spread over
+  // ~1750 bytes came in under the threshold and the model was handed
+  // `��Ŀ¼���ļ�` — the only line in the turn that said what actually went wrong.
+  const message = '子目录或文件 coffee-ordering-system 已经存在。'
+  const gbk = Uint8Array.from([
+    0xd7, 0xd3, 0xc4, 0xbf, 0xc2, 0xbc, 0xbb, 0xf2, 0xce, 0xc4, 0xbc, 0xfe, 0x20, 0x63, 0x6f, 0x66,
+    0x66, 0x65, 0x65, 0x2d, 0x6f, 0x72, 0x64, 0x65, 0x72, 0x69, 0x6e, 0x67, 0x2d, 0x73, 0x79, 0x73,
+    0x74, 0x65, 0x6d, 0x20, 0xd2, 0xd1, 0xbe, 0xad, 0xb4, 0xe6, 0xd4, 0xda, 0xa1, 0xa3,
+  ])
+  assert.equal(decodeBytes(gbk), message, 'the bare message must survive')
+  // The same message followed by kilobytes of build output must still be
+  // recognised. This is the half the old implementation got wrong: unrelated
+  // ASCII appended later is not evidence about the bytes that came before it.
+  const tail = new TextEncoder().encode('\n' + 'x\n'.repeat(4000))
+  const padded = Uint8Array.from([...gbk, ...tail])
+  assert.equal(decodeBytes(padded).slice(0, message.length), message)
+})
+
+test('mostly-valid UTF-8 is not dragged through GBK for one bad byte', () => {
+  // The guard on the other side, and the reason the ratio counts only bytes
+  // >= 0x80: GBK can decode almost any byte pair, so "GBK produced no
+  // replacement characters" proves nothing. A buffer that is UTF-8 with one
+  // damaged byte must stay UTF-8, or the fix would trade one mojibake for a
+  // worse one.
+  const text = '这是一段很长的中文说明，'.repeat(20)
+  const utf8 = new TextEncoder().encode(text)
+  utf8[10] = 0xff // one stray byte, the shape a truncated write leaves behind
+  const decoded = decodeBytes(utf8)
+  assert.ok(
+    decoded.includes('这是一段很长的中文说明，'),
+    `refusing GBK, got ${JSON.stringify(decoded.slice(0, 30))}`,
+  )
+})
+
+test('a timeout can say it was waiting for input when the last line is a prompt', async () => {
+  const { looksLikeWaitingForInput } = await import('../dist/core/tools/bash.js')
+  // The real tail from session eacfc4b6: mvn asked for confirmation, got no
+  // terminal, and sat there until the 120s timeout killed it. The model was told
+  // only "killed" and spent its next two attempts guessing at causes.
+  const mvn = [
+    '[INFO] Generating project in Interactive mode',
+    'Confirm properties configuration:',
+    'groupId: com.coffeeshop',
+    'artifactId: coffee-ordering-system',
+    ' Y: ',
+  ].join('\n')
+  assert.equal(looksLikeWaitingForInput(mvn), true, 'the exact tail from the session')
+  assert.equal(looksLikeWaitingForInput('Do you want to continue? [y/n]'), true)
+  assert.equal(looksLikeWaitingForInput('Press any key to continue . . .'), true)
+  assert.equal(looksLikeWaitingForInput('Enter password:'), true)
+  // Ordinary output ends in a colon often enough that the rule must not fire on
+  // it — a prompt has to look like a prompt, not merely end in punctuation.
+  assert.equal(looksLikeWaitingForInput('[INFO] BUILD SUCCESS\n[INFO] Total time: 3.4 s'), false)
+  assert.equal(looksLikeWaitingForInput('[INFO] Compiling 4 source files to D:\\x\\target'), false)
+  assert.equal(looksLikeWaitingForInput(''), false)
+})
+
 if (process.platform === 'win32') {
   test('the shell tool decodes Windows OEM console output (cp936)', async () => {
     // The real bug: `dir` on a Chinese Windows writes code page 936, so reading

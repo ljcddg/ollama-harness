@@ -117,6 +117,48 @@ export function shellFailureIn(output: string): string | null {
   return null
 }
 
+/**
+ * Wording that means a program is waiting for a human, not working.
+ *
+ * Matched against the last non-blank line only. The opening of a transcript is
+ * full of ordinary colons and brackets, so scanning the whole body would fire
+ * on almost every build; the tail is where a prompt actually lives.
+ */
+const PROMPT_PATTERNS: RegExp[] = [
+  /\by\s*\/\s*n\b/i, // `[y/n]`, `(y/n)`, `Y/N`
+  /\[yes\/no\]/i,
+  /\bpassword\b\s*:?$/i,
+  /press any key/i,
+  /按任意键/,
+  /\bpress\s+(?:enter|return)\b/i,
+  /\bconfirm\b[^:]*:\s*$/i,
+  /^[A-Za-z]?\s*[:?]$/, // a lone ` Y:` / `:` / `?`
+]
+
+/**
+ * True when the last line of output looks like a prompt awaiting a keystroke.
+ *
+ * Called only after a timeout, to say why the command was still running rather
+ * than just that it was killed. `mvn archetype:generate` without
+ * `-DinteractiveMode=false` asks `Confirm properties configuration: … Y:` and
+ * then waits forever, because the shell has no terminal attached and nobody can
+ * ever answer. A model was told only `[command killed after 120000ms]`,
+ * concluded the tool was broken, and spent its next two attempts on guesses
+ * (session eacfc4b6) — while the diagnosis sat in the last line of output it
+ * was already holding.
+ *
+ * A false positive costs one extra sentence in an error message, so the rules
+ * stay simple and the tail stays short.
+ */
+export function looksLikeWaitingForInput(output: string): boolean {
+  const lines = output.split(/\r?\n/).filter((line) => line.trim().length > 0)
+  const last = lines[lines.length - 1]
+  if (last === undefined) return false
+  const tail = last.trim()
+  if (tail.length === 0 || tail.length > 200) return false
+  return PROMPT_PATTERNS.some((re) => re.test(tail))
+}
+
 /** How one command will be handed to the operating system. */
 interface SpawnSpec {
   file: string
@@ -362,8 +404,18 @@ async function runCommand(
 
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
+      const body = render()
+      // "killed after 120s" is a fact; it is not a diagnosis, and a model that
+      // only gets the fact starts guessing at causes. When the last line looks
+      // like a keystroke prompt, name the cause and the fix in one breath.
+      const waiting = looksLikeWaitingForInput(body)
+        ? '\n[It was still waiting on that last prompt, which means it wanted a keystroke ' +
+          'that can never arrive — the shell has no terminal attached. Re-run it with the ' +
+          'flag that suppresses the question (Maven: `-B`, or `-DinteractiveMode=false`), ' +
+          'or feed the answer in on stdin.]'
+        : ''
       finish({
-        content: `${render()}\n\n[command killed after ${timeoutMs}ms]`,
+        content: `${body}\n\n[command killed after ${timeoutMs}ms]${waiting}`,
         isError: true,
       })
     }, timeoutMs)
