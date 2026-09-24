@@ -1447,8 +1447,18 @@ kbd {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(44, 44, 42, 0.35);
-  backdrop-filter: blur(2px);
+  /*
+   * No backdrop-filter on purpose — do not add it back.
+   *
+   * A full-viewport blur whose subtree contains a scrolling panel is re-blurred
+   * on every frame of that scroll. Measured in this app, the settings dialog
+   * scrolled at a p50 frame interval of 90ms (~11fps) with `blur(2px)` here and
+   * 5ms without; the property alone was the whole cost, and the same overlay
+   * carries the approval dialog. The denser tint below does the "recede behind
+   * the modal" job for free. `scripts/probe-settings-scroll.mjs` is the gate
+   * that catches a reintroduction.
+   */
+  background: rgba(44, 44, 42, 0.42);
   z-index: 50;
 }
 
@@ -1511,6 +1521,8 @@ kbd {
   overflow-wrap: anywhere;
   max-height: 260px;
   overflow-y: auto;
+  /* Same reason as .settings-scroll: keep the wheel inside the dialog. */
+  overscroll-behavior: contain;
 }
 
 .modal-actions {
@@ -1714,6 +1726,9 @@ kbd {
   margin: 6px -4px 0;
   padding: 0 4px;
   overflow-y: auto;
+  /* Without this, hitting either end hands the wheel to the transcript behind
+     the overlay, and the whole page appears to jump under the modal. */
+  overscroll-behavior: contain;
 }
 
 .settings-section {
