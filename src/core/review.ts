@@ -28,6 +28,11 @@ export interface SelfReviewInput {
   messages: readonly Message[]
   /** The user's own words for this turn — the yardstick. */
   userText: string
+  /**
+   * What changed on disk this turn, measured by the harness. Pre-rendered by
+   * `formatChanges` so the reviewer never has to guess the shape.
+   */
+  workspace?: string
   signal: AbortSignal
 }
 
@@ -56,7 +61,7 @@ export async function runSelfReview(input: SelfReviewInput): Promise<ReviewResul
         content: [
           {
             type: 'text',
-            text: [transcript, '', '---', '', buildReviewPrompt(input.userText)].join('\n'),
+            text: [transcript, '', '---', '', buildReviewPrompt(input.userText, input.workspace)].join('\n'),
           },
         ],
         source: { kind: 'user' },

@@ -276,7 +276,7 @@ export function buildSystemPrompt(ctx: PromptContext): string {
  * purpose: the reviewer must be told to distrust the work it is judging, or it
  * will simply restate the completion summary it can see in the history.
  */
-export function buildReviewPrompt(request: string): string {
+export function buildReviewPrompt(request: string, workspace?: string): string {
   return [
     'You are auditing work that has just been completed. You did the work, and you',
     'are now checking it against what was actually asked for.',
@@ -290,6 +290,20 @@ export function buildReviewPrompt(request: string): string {
     'and judge only what the evidence supports. Do not trust the final summary; it',
     'is the claim under audit. If a file was supposedly created but no `write` or',
     '`edit` call produced it, that requirement is missing.',
+    ...(workspace === undefined
+      ? []
+      : [
+          '',
+          'The harness also measured what changed on disk during this turn, without',
+          'asking any command:',
+          '',
+          workspace,
+          '',
+          'A command like `del` or `rm` prints nothing and still exits 0, so the',
+          'transcript on its own cannot tell you whether a destructive command did',
+          'what it claimed. This list can. Where a claim about files contradicts it,',
+          'the claim is wrong.',
+        ]),
     '',
     'Reply with JSON only, no prose around it:',
     '{',

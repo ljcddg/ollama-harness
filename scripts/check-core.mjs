@@ -1144,6 +1144,156 @@ await test('a step over budget trims tool results before the request goes out', 
   )
 })
 
+console.log('\nwhat actually changed on disk (`workspace`)')
+
+const mkStamp = (files) => ({ files: new Map(Object.entries(files)), truncated: false })
+
+test('a diff names what appeared, changed and disappeared — and sorts it', async () => {
+  const { diffWorkspace } = await import('../dist/core/workspace.js')
+  const before = mkStamp({ 'src/a.java': '10:1', 'src/b.java': '20:1', 'README.md': '5:1' })
+  const after = mkStamp({ 'src/a.java': '10:1', 'src/b.java': '99:2', 'pom.xml': '30:9' })
+  assert.deepEqual(diffWorkspace(before, after), [
+    { path: 'pom.xml', kind: 'added' },
+    { path: 'README.md', kind: 'removed' },
+    { path: 'src/b.java', kind: 'modified' },
+  ])
+  // A file has exactly one state; an unchanged file has none of them.
+  assert.deepEqual(diffWorkspace(before, before), [])
+  // Sorted, because a reviewer reads this and a shifting order would make two
+  // identical turns look different.
+  assert.deepEqual(
+    diffWorkspace(mkStamp({}), mkStamp({ 'z.txt': '1:1', 'a.txt': '1:1', 'm.txt': '1:1' })).map((c) => c.path),
+    ['a.txt', 'm.txt', 'z.txt'],
+  )
+})
+
+test('an empty diff says so instead of staying silent', async () => {
+  const { formatChanges } = await import('../dist/core/workspace.js')
+  // The strongest thing this can tell a reviewer about a turn whose commands all
+  // "succeeded": nothing happened. Silence would leave the same hole the diff fills.
+  assert.match(formatChanges([], false), /no files on disk changed/)
+  const text = formatChanges(
+    [
+      { path: 'mail.iml', kind: 'removed' },
+      { path: 'pom.xml', kind: 'removed' },
+    ],
+    false,
+  )
+  assert.match(text, /2 file\(s\) changed/)
+  assert.match(text, /2 removed/)
+  assert.match(text, /- removed: pom\.xml/)
+  // A walk that was cut short must say so, or an incomplete list reads as a
+  // complete one — the exact failure this module exists to remove.
+  assert.match(formatChanges([], true), /may be incomplete/)
+})
+
+await test('a snapshot sees real changes and ignores build output', async () => {
+  const { snapshotWorkspace, diffWorkspace } = await import('../dist/core/workspace.js')
+  const dir = await mkdtemp(joinPath(os.tmpdir(), 'harness-ws-'))
+  try {
+    await mkdir(joinPath(dir, 'src'), { recursive: true })
+    await writeFile(joinPath(dir, 'src', 'a.java'), 'one', 'utf8')
+    await writeFile(joinPath(dir, 'README.md'), 'hello', 'utf8')
+    const before = await snapshotWorkspace(dir)
+
+    await writeFile(joinPath(dir, 'src', 'a.java'), 'one two', 'utf8')
+    await writeFile(joinPath(dir, 'pom.xml'), '<project/>', 'utf8')
+    await rm(joinPath(dir, 'README.md'))
+    // Build output is excluded through the same NOISE_DIRS the file tools use: a
+    // compile creating target/classes is not a change to anyone's work, and
+    // listing it would bury the files that really were deleted.
+    await mkdir(joinPath(dir, 'target', 'classes'), { recursive: true })
+    await writeFile(joinPath(dir, 'target', 'classes', 'App.class'), 'x', 'utf8')
+
+    const after = await snapshotWorkspace(dir)
+    assert.deepEqual(diffWorkspace(before, after), [
+      { path: 'pom.xml', kind: 'added' },
+      { path: 'README.md', kind: 'removed' },
+      { path: 'src/a.java', kind: 'modified' },
+    ])
+    assert.equal(after.truncated, false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+await test('a turn hands the reviewer what actually changed on disk', async () => {
+  // The wiring, and the point of the whole thing. The reviewer decides whether a
+  // turn may end, and it has been judging claims with no independent facts to
+  // judge them against: the `del /q *.*` session was approved as `match` while 25
+  // of the 27 files it claimed to have cleared sat untouched.
+  const dir = await mkdtemp(joinPath(os.tmpdir(), 'harness-ws-turn-'))
+  const seen = []
+  const adapter = {
+    provider: 'stub',
+    async *stream(generate) {
+      seen.push(
+        generate.messages
+          .flatMap((m) => m.content)
+          .map((b) => b.text ?? '')
+          .join('\n'),
+      )
+      if (seen.length === 1) {
+        yield {
+          type: 'tool-call-delta',
+          index: 0,
+          callId: 'c1',
+          name: 'stub_write',
+          argumentsDelta: '{"path":"new-file.txt"}',
+        }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+        return
+      }
+      yield { type: 'block-start', index: 0, kind: 'text' }
+      yield { type: 'text-delta', index: 0, text: '创建完成。' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+    async listModels() {
+      return []
+    },
+  }
+
+  const tools = new ToolRegistry()
+  tools.register({
+    name: 'stub_write',
+    description: 'Write a stub file.',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    async execute(args) {
+      await writeFile(joinPath(dir, String(args.path)), 'made by the tool', 'utf8')
+      return { content: 'wrote it' }
+    },
+  })
+
+  const events = []
+  try {
+    await runTurn({
+      cwd: dir,
+      model: 'stub',
+      config: { ...DEFAULT_CONFIG, model: 'stub', maxStepsPerTurn: 2 },
+      adapter,
+      tools,
+      history: [],
+      userText: '帮我创建一个文件',
+      events: { onEvent: (e) => events.push(e), onPhase: () => {}, requestApproval: async () => true },
+      signal: new AbortController().signal,
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+
+  const recorded = events.find((e) => e.type === 'workspace/changes')
+  assert.ok(recorded !== undefined, 'the diff must reach the log, not only the reviewer')
+  assert.deepEqual(recorded.data.counts, { added: 1, removed: 0, modified: 0 })
+  assert.deepEqual(recorded.data.paths, ['added: new-file.txt'])
+
+  // And the reviewer really was handed it, as a measurement rather than as the
+  // model's account of one.
+  const reviewPrompt = seen.find((text) => text.includes('auditing work'))
+  assert.ok(reviewPrompt !== undefined, 'the gate must have run for this turn')
+  assert.match(reviewPrompt, /1 file\(s\) changed/)
+  assert.match(reviewPrompt, /added: new-file\.txt/)
+})
+
 if (process.platform === 'win32') {
   test('the shell tool decodes Windows OEM console output (cp936)', async () => {
     // The real bug: `dir` on a Chinese Windows writes code page 936, so reading

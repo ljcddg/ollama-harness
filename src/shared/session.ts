@@ -80,6 +80,24 @@ export type SessionEvent =
       data: { turn: number; step: number; pruned: number; charsRemoved: number }
     })
   /**
+   * What the working directory gained, lost and changed during one turn.
+   *
+   * Log-only. It is measured (`core/workspace.ts`), not declared, so a replay
+   * never needed it to derive the request — but it is the only record of what
+   * actually happened on disk, which is precisely what a turn's own summary has
+   * been getting wrong.
+   */
+  | (EventBase & {
+      type: 'workspace/changes'
+      data: {
+        turn: number
+        counts: { added: number; removed: number; modified: number }
+        /** `kind: path`, capped; `truncated` says when paths were dropped. */
+        paths: string[]
+        truncated: boolean
+      }
+    })
+  /**
    * The self-review gate was consulted, and this is what it decided.
    *
    * Recorded on EVERY path, including the two where the gate did nothing:
