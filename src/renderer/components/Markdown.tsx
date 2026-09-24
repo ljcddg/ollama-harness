@@ -36,7 +36,7 @@ type Block =
   | { kind: 'code'; lang: string; text: string; open: boolean }
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'quote'; text: string }
-  | { kind: 'list'; ordered: boolean; items: string[] }
+  | { kind: 'list'; ordered: boolean; start?: number; items: string[] }
   | { kind: 'table'; head: string[]; rows: string[][] }
   | { kind: 'rule' }
   | { kind: 'para'; text: string }
@@ -53,7 +53,10 @@ function BlockView({ block }: { block: Block }) {
       return <blockquote className="md-quote">{renderInline(block.text)}</blockquote>
     case 'list':
       return block.ordered ? (
-        <ol className="md-list">
+        // `start` matters: numbered items separated by bullet sub-lists become
+        // several single-item <ol>s, and without it every one of them restarts
+        // at 1 — which is why a model's "1. 2. 3." used to render as "1. 1. 1.".
+        <ol className="md-list" start={block.start ?? 1}>
           {block.items.map((item, i) => (
             <li key={i}>{renderInline(item)}</li>
           ))}
@@ -192,18 +195,23 @@ function parseBlocks(text: string): Block[] {
     }
 
     const bullet = /^\s*[-*+]\s+(.*)$/.exec(line)
-    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line)
+    const numbered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line)
     if (bullet || numbered) {
       const ordered = numbered !== null
-      const pattern = ordered ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*+]\s+(.*)$/
+      const pattern = ordered ? /^\s*(\d+)[.)]\s+(.*)$/ : /^\s*[-*+]\s+(.*)$/
       const items: string[] = []
       while (i < end) {
         const match = pattern.exec(lines[i]!)
         if (!match) break
-        items.push(match[1]!.trim())
+        items.push((ordered ? match[2] : match[1])!.trim())
         i += 1
       }
-      blocks.push({ kind: 'list', ordered, items })
+      blocks.push({
+        kind: 'list',
+        ordered,
+        ...(ordered ? { start: parseInt(numbered![1]!, 10) } : {}),
+        items,
+      })
       continue
     }
 
