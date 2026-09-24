@@ -108,17 +108,27 @@ export function pruneToolResults(messages: readonly Message[]): PruneOutcome {
 /**
  * How many characters a request would carry.
  *
- * The same unit `compactThresholdChars` is expressed in, so the two can be
- * compared directly. Tool-call arguments are ignored: they are structured and
- * bounded, and serialising every one of them on every step to add a few hundred
- * characters to a 24 000-character budget is not worth the cost.
+ * Counts what the adapter actually sends, which is NOT the same set the log
+ * holds. Two differences, and the first one was measured: `deriveMessages` keeps
+ * a `reasoning` block on every assistant message — 39.5% of the characters in
+ * session 0b5d68df — while `encodeMessage` drops it on the way out, so counting
+ * it inflated the budget by more than a third and would have fired the pruner on
+ * requests that were never over. Tool-call arguments go the other way: they ARE
+ * sent as structured data, and were not counted at all.
+ *
+ * This is not a rounding error — it decides whether a request is trimmed. The
+ * unit matches `compactThresholdChars` so the two compare directly.
  */
 export function requestChars(messages: readonly Message[]): number {
   let total = 0
   for (const message of messages) {
     for (const block of message.content) {
-      if (block.type === 'text' || block.type === 'reasoning') total += block.text.length
+      if (block.type === 'text') total += block.text.length
       else if (block.type === 'tool-result') total += block.content.length
+      else if (block.type === 'tool-call') {
+        // `JSON.stringify(undefined)` returns undefined, not a string.
+        total += block.arguments === undefined ? 0 : JSON.stringify(block.arguments).length
+      }
     }
   }
   return total

@@ -1039,17 +1039,24 @@ test("pruning rewrites tool results and leaves the model's own words alone", asy
   assert.equal(pruneToolResults(messages.slice(2, 3)).messages[0], messages[2])
 })
 
-test('the request size is measured in the same unit as the budget', async () => {
+test('the request size counts what actually gets sent, and only that', async () => {
   const { requestChars } = await import('../dist/core/prune.js')
   assert.equal(requestChars([]), 0)
+  const callArgs = { path: 'src/index.ts', limit: 40 }
   const messages = [
     mkMessage('m1', 'user', [{ type: 'text', text: 'abc' }]),
-    mkMessage('m2', 'assistant', [{ type: 'text', text: 'de' }, { type: 'reasoning', text: 'fg' }]),
+    mkMessage('m2', 'assistant', [
+      { type: 'text', text: 'de' },
+      // Reasoning never leaves the process — `encodeMessage` keeps only text and
+      // tool calls — so charging it against a budget measured in what the
+      // provider receives made that budget a third too large.
+      { type: 'reasoning', text: 'a long internal monologue that costs nothing' },
+    ]),
     mkMessage('m3', 'tool', [{ type: 'tool-result', callId: 'c', name: 'read', content: 'hij', isError: false }]),
+    // Arguments ARE sent, as structured data, so they are charged.
+    mkMessage('m4', 'assistant', [{ type: 'tool-call', callId: 'c2', name: 'read', arguments: callArgs }]),
   ]
-  // 3 + 2 + 2 + 3. Reasoning counts: it is sent back with the request and costs
-  // the same as visible text.
-  assert.equal(requestChars(messages), 10)
+  assert.equal(requestChars(messages), 3 + 2 + 3 + JSON.stringify(callArgs).length)
 })
 
 await test('a step over budget trims tool results before the request goes out', async () => {
