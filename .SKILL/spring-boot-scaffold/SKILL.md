@@ -36,6 +36,15 @@ Each file's declared `package` must match the directory it lands in. A Java file
 says `package com.example.cafe.controller` but sits in the project root compiles
 nowhere, and every tool will still report the write as successful.
 
+**The application class must sit in the PARENT package of everything else.** Spring
+scans outward from the package the application class is declared in, and nowhere else —
+so `com.example.cafe.Application` finds `com.example.cafe.controller.MenuController`,
+while `com.example.cafeapp.Application` finds **nothing at all**. This failure is nastier
+than a compile error: it compiles, it starts, and then every route returns 404, which
+reads as "the API is broken" rather than "the class is in the wrong place". A generated
+project has already done exactly this — main class in `com.coffeeshopordering`, every
+other class in `com.coffeeshop`.
+
 ## Run Maven in batch mode, always
 
     mvn -B clean package
