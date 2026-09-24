@@ -297,6 +297,16 @@ function fold(state: State, event: SessionEvent): State {
         node.kind === 'assistant' && node.streaming ? { ...node, streaming: false } : node,
       )
       if (reason.kind === 'error') {
+        // The loop emits step/end AND turn/end with the same failure; without
+        // this guard the user sees the identical error card twice in a row.
+        const last = nodes[nodes.length - 1]
+        if (
+          last?.kind === 'error' &&
+          last.message === reason.failure.message &&
+          last.code === reason.failure.code
+        ) {
+          return { ...state, openAssistantId: null, nodes }
+        }
         return {
           ...state,
           openAssistantId: null,
@@ -344,7 +354,7 @@ export interface Harness {
   ready: boolean
   send(text: string): Promise<void>
   cancel(): void
-  answerApproval(approved: boolean): void
+  answerApproval(approved: boolean, remember?: boolean): void
   newSession(): Promise<void>
   /** Start a session in a specific directory (sidebar group "+"). */
   newSessionIn(workdir?: string): Promise<void>
@@ -632,10 +642,10 @@ export function useHarness(): Harness {
   }, [])
 
   const answerApproval = useCallback(
-    (approved: boolean) => {
+    (approved: boolean, remember = false) => {
       const current = approval
       setApproval(null)
-      if (current) void window.harness.respondApproval(current.callId as ToolCallId, approved)
+      if (current) void window.harness.respondApproval(current.callId as ToolCallId, approved, remember)
     },
     [approval],
   )

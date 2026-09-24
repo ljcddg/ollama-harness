@@ -70,8 +70,8 @@ const bridge: HarnessBridge = {
   createSession: (workdir?: string) => ipcRenderer.invoke(CH.createSession, workdir),
   sendMessage: (req) => ipcRenderer.invoke(CH.sendMessage, req),
   cancelTurn: () => ipcRenderer.invoke(CH.cancelTurn),
-  respondApproval: (callId: ToolCallId, approved: boolean) =>
-    ipcRenderer.invoke(CH.respondApproval, callId, approved),
+  respondApproval: (callId: ToolCallId, approved: boolean, remember?: boolean) =>
+    ipcRenderer.invoke(CH.respondApproval, callId, approved, remember === true),
   getState: () => ipcRenderer.invoke(CH.getState),
   setModel: (model: string) => ipcRenderer.invoke(CH.setModel, model),
   setWorkdir: (dir: string) => ipcRenderer.invoke(CH.setWorkdir, dir),

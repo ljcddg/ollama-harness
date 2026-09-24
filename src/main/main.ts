@@ -310,9 +310,12 @@ function registerIpc(agent: AgentService, config: ConfigStore): void {
     agent.cancel()
   })
 
-  ipcMain.handle(IPC.invoke.respondApproval, async (_e, callId: string, approved: boolean) => {
-    agent.resolveApproval(asToolCallId(callId), approved)
-  })
+  ipcMain.handle(
+    IPC.invoke.respondApproval,
+    async (_e, callId: string, approved: boolean, remember: boolean) => {
+      agent.resolveApproval(asToolCallId(callId), approved, remember === true)
+    },
+  )
 
   ipcMain.handle(IPC.invoke.getState, async () => ({
     config: await config.load(),

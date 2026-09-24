@@ -148,6 +148,7 @@ export function Composer(props: Props) {
               模型自审
             </button>
             <StatusLine status={status} />
+            <ContextMeter context={status.context} />
           </div>
 
           {status.busy ? (
@@ -201,6 +202,42 @@ function StatusLine({ status }: { status: AgentStatus }) {
   return (
     <span className="status status-busy">
       <span className="status-spinner" aria-hidden />
+      {label}
+    </span>
+  )
+}
+
+/** `1234` → `1.2k`, so the meter stays narrow in every state. */
+function formatK(tokens: number): string {
+  return tokens >= 10_000
+    ? `${Math.round(tokens / 1000)}k`
+    : tokens >= 1000
+      ? `${(tokens / 1000).toFixed(1)}k`
+      : String(tokens)
+}
+
+/**
+ * Context occupancy: how much of the model's window the next request will
+ * carry. Always visible once a conversation has made a call — the number a
+ * user needs BEFORE the model starts drowning is this one, not a banner that
+ * shows up after. Without a reported window only the absolute count shows.
+ */
+function ContextMeter({ context }: { context: AgentStatus['context'] }) {
+  if (!context) return null
+  const share = context.window !== null && context.window > 0 ? context.used / context.window : null
+  const percent = share !== null ? Math.min(999, Math.round(share * 100)) : null
+  const level = share === null ? '' : share >= 0.85 ? ' is-high' : share >= 0.7 ? ' is-warn' : ''
+  const label =
+    context.window !== null
+      ? `上下文 ${formatK(context.used)} / ${formatK(context.window)}（${percent}%）`
+      : `上下文 ${formatK(context.used)}`
+  return (
+    <span
+      className={`context-meter${level}`}
+      title={`下一次请求将携带的上下文：约 ${context.used.toLocaleString('zh-CN')} tokens${
+        context.window !== null ? `，模型窗口 ${context.window.toLocaleString('zh-CN')}` : ''
+      }。超过约 70% 时会自动压缩。`}
+    >
       {label}
     </span>
   )

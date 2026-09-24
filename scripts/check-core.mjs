@@ -15,6 +15,7 @@ import { BlockAssembler } from '../dist/core/llm/assembler.js'
 import {
   deriveMessages,
   deriveUsage,
+  deriveContextTokens,
   deriveTurnBoundary,
   resolveSessionCwd,
 } from '../dist/shared/session.js'
@@ -54,7 +55,7 @@ import {
 } from '../dist/core/stall.js'
 import { runTurn } from '../dist/core/loop.js'
 import { createDefaultRegistry } from '../dist/core/tools/index.js'
-import { modelFlags } from '../dist/core/llm/ollama-adapter.js'
+import { modelFlags, contextLengthOf } from '../dist/core/llm/ollama-adapter.js'
 import { groupSessions, folderName, pathKey } from '../dist/shared/grouping.js'
 import { deflateSync } from 'node:zlib'
 
@@ -289,6 +290,30 @@ test('sums token usage across steps', () => {
   assert.equal(usage.inputTokens, 30)
   assert.equal(usage.outputTokens, 13)
   assert.equal(usage.reasoningTokens, 3)
+})
+
+test('deriveContextTokens reports the LAST call, not the cumulative spend', () => {
+  // Context size is what the next request carries: the last input (the whole
+  // context the model saw) plus that call's output. Summing every call like
+  // deriveUsage would count the same tokens over and over.
+  const events = [
+    ev(1, 'step/usage', { usage: { inputTokens: 100, outputTokens: 20 } }),
+    ev(2, 'step/usage', { usage: { inputTokens: 500, outputTokens: 50 } }),
+    ev(3, 'step/usage', { usage: { inputTokens: 200, outputTokens: 10 } }),
+  ]
+  assert.equal(deriveContextTokens(events), 210)
+  assert.equal(deriveContextTokens([]), null)
+})
+
+test('contextLengthOf finds the window whatever arch prefix Ollama used', () => {
+  // Ollama has no canonical key — llama.context_length, gemma4.context_length,
+  // bert.context_length — so the rule is the suffix, and it is pinned here.
+  assert.equal(contextLengthOf({ 'gemma4.context_length': 8192 }), 8192)
+  assert.equal(contextLengthOf({ 'llama.context_length': 131072, other: 1 }), 131072)
+  assert.equal(contextLengthOf({ context_length: 4096 }), 4096)
+  assert.equal(contextLengthOf({ 'llama.attention.head_count': 32 }), undefined)
+  assert.equal(contextLengthOf({ 'gemma4.context_length': '8192' }), undefined, 'a string is not a number')
+  assert.equal(contextLengthOf(undefined), undefined)
 })
 
 test('detects an open turn', () => {

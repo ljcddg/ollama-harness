@@ -103,6 +103,28 @@ const CAPABILITY_TIMEOUT_MS = 3_000
 
 interface OllamaShowResponse {
   capabilities?: string[]
+  /** Free-form model metadata; the context length hides here per-arch. */
+  model_info?: Record<string, unknown>
+}
+
+/**
+ * The model's context window from `/api/show` `model_info`.
+ *
+ * Ollama reports it per architecture (`llama.context_length`,
+ * `gemma4.context_length`, `bert.context_length`, …) with no single canonical
+ * key, so the rule is "any key that ends in .context_length". Pure and
+ * exported: which key wins is exactly the kind of rule a live-only check
+ * would leave unpinned.
+ */
+export function contextLengthOf(modelInfo: Record<string, unknown> | undefined): number | undefined {
+  if (!modelInfo) return undefined
+  for (const [key, value] of Object.entries(modelInfo)) {
+    const isContextKey = key === 'context_length' || key.endsWith('.context_length')
+    if (isContextKey && typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return value
+    }
+  }
+  return undefined
 }
 
 /**
@@ -218,7 +240,7 @@ export class OllamaAdapter extends LlmAdapter {
     // it runs in parallel and is allowed to fail: a build without `/api/show`, or
     // a model that will not answer, falls back to the name heuristics below
     // rather than blocking the picker.
-    const capabilities = await Promise.all(
+    const probes = await Promise.all(
       names.map(async (name) => {
         try {
           const probe = await fetch(`${this.baseUrl}/api/show`, {
@@ -229,7 +251,10 @@ export class OllamaAdapter extends LlmAdapter {
           })
           if (!probe.ok) return null
           const detail = (await probe.json()) as OllamaShowResponse
-          return Array.isArray(detail.capabilities) ? detail.capabilities : null
+          return {
+            capabilities: Array.isArray(detail.capabilities) ? detail.capabilities : null,
+            contextWindow: contextLengthOf(detail.model_info),
+          }
         } catch {
           return null
         }
@@ -240,11 +265,13 @@ export class OllamaAdapter extends LlmAdapter {
       const raw = models.find((m) => (m.name ?? m.model) === name)
       // Some Ollama builds report `families: null` instead of omitting it.
       const families = raw?.details?.families ?? []
+      const probe = probes[i]
       return {
         id: name,
         label: name,
         provider: this.provider,
-        ...modelFlags({ name, families, capabilities: capabilities[i] }),
+        ...(probe?.contextWindow !== undefined ? { contextWindow: probe.contextWindow } : {}),
+        ...modelFlags({ name, families, capabilities: probe?.capabilities ?? null }),
       } satisfies ModelInfo
     })
   }

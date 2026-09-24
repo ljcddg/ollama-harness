@@ -17,7 +17,7 @@ import { createDefaultRegistry, MUTATING_TOOLS, type ToolRegistry } from '../cor
 import type { GenerateOptions, LlmFailure, ModelInfo, SessionId, ToolCallId } from '../shared/message.js'
 import { asMessageId, asSessionId } from '../shared/message.js'
 import type { SessionEvent, SessionHeader, SessionMeta } from '../shared/session.js'
-import { deriveMessages, deriveTitle, latestCompaction, resolveSessionCwd } from '../shared/session.js'
+import { deriveContextTokens, deriveMessages, deriveTitle, latestCompaction, resolveSessionCwd } from '../shared/session.js'
 import type {
   AgentStatus,
   AppConfig,
@@ -40,6 +40,9 @@ export interface AgentServiceDeps {
   pushApproval(request: ApprovalRequest): void
 }
 
+/** Auto-compact kicks in once the conversation crosses this share of the window. */
+const AUTO_COMPACT_SHARE = 0.7
+
 export class AgentService {
   private adapter: LlmAdapter
   private tools: ToolRegistry
@@ -48,7 +51,17 @@ export class AgentService {
   private abort: AbortController | null = null
   private status: AgentStatus = { busy: false, turn: null, phase: 'idle' }
   /** Pending approval resolvers, keyed by call id. */
-  private readonly pendingApprovals = new Map<ToolCallId, (approved: boolean) => void>()
+  private readonly pendingApprovals = new Map<ToolCallId, { name: string; resolve: (approved: boolean) => void }>()
+  /**
+   * Tools the user approved "for this session, don't ask again". Scoped to the
+   * session on purpose: what is safe inside project A (writes, shell) is not
+   * automatically safe in the next conversation, and a blanket "always allow"
+   * that survives sessions is how an approval dialog trains its user to click
+   * without reading. Cleared on create/load.
+   */
+  private readonly sessionApprovedTools = new Set<string>()
+  /** Context windows by model id; `null` = the provider does not report one. */
+  private readonly contextWindows = new Map<string, number | null>()
 
   constructor(private readonly deps: AgentServiceDeps) {
     // The closures read `this.adapter` at CALL time, not construction time, so
@@ -103,6 +116,8 @@ export class AgentService {
     const header = SessionStore.newHeader(id, cwd)
     this.header = header
     this.events = []
+    this.sessionApprovedTools.clear()
+    this.setStatus({ ...this.status, context: undefined })
     await this.deps.sessions.save(header, this.events)
     return { meta: this.toMeta(header), events: [] }
   }
@@ -112,6 +127,11 @@ export class AgentService {
     if (!loaded) return null
     this.header = loaded.header
     this.events = loaded.events
+    this.sessionApprovedTools.clear()
+    // Usage events persist in the log, so a loaded conversation can show its
+    // context occupancy immediately — the window fill in on first use.
+    const used = deriveContextTokens(this.events)
+    this.setStatus({ ...this.status, ...(used === null ? { context: undefined } : { context: { used, window: null } }) })
     return { meta: this.toMeta(loaded.header), events: loaded.events }
   }
 
@@ -200,7 +220,15 @@ export class AgentService {
       await this.persist()
     } finally {
       this.abort = null
-      this.setStatus({ busy: false, turn: null, phase: 'idle' })
+      const used = deriveContextTokens(this.events)
+      const window = used === null ? null : await this.contextWindowFor(config.model)
+      this.setStatus({
+        ...this.status,
+        busy: false,
+        turn: null,
+        phase: 'idle',
+        ...(used === null ? { context: undefined } : { context: { used, window } }),
+      })
     }
   }
 
@@ -323,32 +351,65 @@ export class AgentService {
   }
 
   /**
-   * Summarise the transcript once it outgrows the configured budget.
+   * Summarise the transcript once it outgrows the model's window.
    *
-   * `autoCompact` shipped as a config field with a settings input and no reader,
-   * so a session grew without bound while the setting appeared to be on. That is
-   * not merely untidy: a small model drowns in a long transcript. Observed live
-   * at 18 turns / ~22K tokens, the model stopped calling tools altogether and
-   * answered from what it half-remembered, attributing a directory from an
-   * earlier, unrelated project to the current one.
+   * Two triggers, token-first:
    *
-   * Measured through `renderForSummary` — the same rendering the summariser
-   * consumes — so the size this triggers on is the size the model receives,
-   * edits and previously-skipped ranges included.
+   * 1. When the provider reports the model's context window, compact once the
+   *    conversation crosses AUTO_COMPACT_SHARE of it. The old char threshold
+   *    had a real failure here: 24k chars of Chinese is ~12k+ tokens — an
+   *    8k-window model overflows LONG before the char budget trips, which is
+   *    why "自动压缩" appeared to do nothing on small models.
+   * 2. Without a reported window, fall back to the configured char budget.
+   *
+   * Measured through the same projections the summariser consumes, so the
+   * size this triggers on is the size the model receives.
    */
   private async maybeAutoCompact(config: AppConfig): Promise<void> {
     if (!config.autoCompact || !this.header) return
-    const budget = config.compactThresholdChars
-    if (!Number.isFinite(budget) || budget <= 0) return
 
-    const chars = deriveMessages(this.events).map(renderForSummary).join('\n\n').length
-    if (chars <= budget) return
+    const window = await this.contextWindowFor(config.model)
+    if (window !== null) {
+      const used = deriveContextTokens(this.events) ?? 0
+      if (used < window * AUTO_COMPACT_SHARE) return
+    } else {
+      const budget = config.compactThresholdChars
+      if (!Number.isFinite(budget) || budget <= 0) return
+      const chars = deriveMessages(this.events).map(renderForSummary).join('\n\n').length
+      if (chars <= budget) return
+    }
 
     try {
       await this.compactSession(config)
     } catch {
       // Never block the user's message on housekeeping; the next send retries.
     }
+  }
+
+  /**
+   * The model's context window, cached per model id.
+   *
+   * Cached including the nulls: an embed-only build or an older Ollama that
+   * reports nothing would otherwise pay a `/api/tags` + `/api/show` round trip
+   * on every send just to learn "no window" again. Context display and the
+   * auto-compact trigger are niceties — a failure here must never break a
+   * turn, so every error path degrades to `null`.
+   */
+  private async contextWindowFor(model: string): Promise<number | null> {
+    if (!model) return null
+    if (this.contextWindows.has(model)) return this.contextWindows.get(model) ?? null
+    let window: number | null = null
+    try {
+      const models = await this.adapter.listModels()
+      const found = models.find((m) => m.id === model)
+      if (found?.contextWindow !== undefined && found.contextWindow > 0) {
+        window = found.contextWindow
+      }
+    } catch {
+      window = null
+    }
+    this.contextWindows.set(model, window)
+    return window
   }
 
   /**
@@ -439,11 +500,14 @@ export class AgentService {
     }
   }
 
-  resolveApproval(callId: ToolCallId, approved: boolean): void {
-    const resolver = this.pendingApprovals.get(callId)
-    if (!resolver) return
+  resolveApproval(callId: ToolCallId, approved: boolean, remember = false): void {
+    const pending = this.pendingApprovals.get(callId)
+    if (!pending) return
     this.pendingApprovals.delete(callId)
-    resolver(approved)
+    // "Remember" is only meaningful for an approval: remembering a refusal
+    // would silently veto future work without the user ever seeing why.
+    if (approved && remember) this.sessionApprovedTools.add(pending.name)
+    pending.resolve(approved)
   }
 
   /** Tools that should be listed as approval-guarded in the settings UI. */
@@ -452,8 +516,11 @@ export class AgentService {
   }
 
   private awaitApproval(request: ApprovalRequest): Promise<boolean> {
+    // Already granted for this session — do not re-ask. Re-asking trains the
+    // user to click through unread, which is worse than asking less often.
+    if (this.sessionApprovedTools.has(request.name)) return Promise.resolve(true)
     return new Promise<boolean>((resolve) => {
-      this.pendingApprovals.set(request.callId, resolve)
+      this.pendingApprovals.set(request.callId, { name: request.name, resolve })
       // If the turn is cancelled while a prompt is open, unblock the loop so it
       // can settle instead of hanging until the user answers a stale prompt.
       const onAbort = () => {

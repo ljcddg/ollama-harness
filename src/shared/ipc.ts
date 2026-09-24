@@ -77,6 +77,12 @@ export interface AgentStatus {
   phase: 'idle' | 'thinking' | 'streaming' | 'tool' | 'waiting-approval'
   /** Set when the last turn failed. */
   lastError?: string
+  /**
+   * Context occupancy of the open conversation: tokens the next request will
+   * carry (last call's input + output), and the model's context window when
+   * the provider reports it. Absent before the first call.
+   */
+  context?: { used: number; window: number | null }
 }
 
 export interface AppConfig {
@@ -295,7 +301,7 @@ export interface HarnessBridge {
   createSession(workdir?: string): Promise<SessionSnapshot>
   sendMessage(req: SendMessageRequest): Promise<void>
   cancelTurn(): Promise<void>
-  respondApproval(callId: ToolCallId, approved: boolean): Promise<void>
+  respondApproval(callId: ToolCallId, approved: boolean, remember?: boolean): Promise<void>
   getState(): Promise<AppState>
   setModel(model: string): Promise<void>
   setWorkdir(dir: string): Promise<void>

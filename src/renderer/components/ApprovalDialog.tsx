@@ -12,7 +12,7 @@ import type { ApprovalRequest } from '@shared/ipc.js'
 
 interface Props {
   request: ApprovalRequest
-  onAnswer(approved: boolean): void
+  onAnswer(approved: boolean, remember?: boolean): void
 }
 
 export function ApprovalDialog({ request, onAnswer }: Props) {
@@ -48,8 +48,14 @@ export function ApprovalDialog({ request, onAnswer }: Props) {
           <button ref={denyRef} className="btn btn-ghost" onClick={() => onAnswer(false)}>
             拒绝 <kbd>Esc</kbd>
           </button>
-          <button className="btn btn-primary" onClick={() => onAnswer(true)}>
+          <button className="btn btn-ghost" onClick={() => onAnswer(true)}>
             允许这一次
+          </button>
+          {/* The session-scoped remember: "this kind is fine here, stop asking".
+              It is deliberately NOT a permanent allow — the next conversation
+              may be a different project where the same tool is not safe. */}
+          <button className="btn btn-primary" onClick={() => onAnswer(true, true)}>
+            允许，本会话不再询问 {request.name}
           </button>
         </div>
       </div>

@@ -316,6 +316,24 @@ export function deriveUsage(events: readonly SessionEvent[]): TokenUsage {
   }
 }
 
+/**
+ * Approximate tokens the NEXT request will carry.
+ *
+ * `deriveUsage` sums every call (cumulative spend); this is the context SIZE:
+ * the last model call's input (the full context it was shown) plus its output
+ * (now part of the history it will be shown next time). Pure and event-folded
+ * like everything else here, so the main process and any test see the same
+ * number. `null` when no call has reported usage yet.
+ */
+export function deriveContextTokens(events: readonly SessionEvent[]): number | null {
+  let total: number | null = null
+  for (const e of events) {
+    if (e.type !== 'step/usage') continue
+    total = e.data.usage.inputTokens + e.data.usage.outputTokens
+  }
+  return total
+}
+
 /** Turn/step boundary state, used to decide whether a session is mid-flight. */
 export interface TurnBoundary {
   lastTurn: number

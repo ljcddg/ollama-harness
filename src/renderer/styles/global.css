@@ -1407,6 +1407,22 @@ kbd {
   color: var(--text-secondary);
 }
 
+.context-meter {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.context-meter.is-warn {
+  color: #b45309;
+}
+
+.context-meter.is-high {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
 .status-spinner {
   width: 10px;
   height: 10px;
