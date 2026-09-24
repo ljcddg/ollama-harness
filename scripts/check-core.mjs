@@ -38,6 +38,7 @@ import {
 import { asMessageId, asToolCallId } from '../dist/shared/message.js'
 import { IPC, DEFAULT_PERSONA, DEFAULT_CONFIG } from '../dist/shared/ipc.js'
 import { buildSystemPrompt, buildReviewPrompt } from '../dist/core/prompt.js'
+import { simplifyInlineMath } from '../dist/shared/latex.js'
 import { extractText, isDocumentPath, looksBinary, extensionOf, decodeBytes } from '../dist/core/extract.js'
 import os from 'node:os'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -557,6 +558,33 @@ test('the reviewer has a yardstick even for vague requests', () => {
   assert.match(prompt, /A vague request still has requirements/)
   assert.match(prompt, /"unclear"/)
   assert.match(prompt, /never as the raw request sentence/)
+})
+
+test('the system prompt forbids LaTeX the renderer cannot show', () => {
+  // Trace: the model answered 输入食材 $\rightarrow$ AI 智能创作 and the user
+  // saw raw dollars and backslashes. The prompt names the alternative now.
+  const prompt = buildSystemPrompt({ cwd: '/tmp', model: 'm', platform: 'linux', toolNames: ['read'] })
+  assert.match(prompt, /LaTeX/)
+  assert.match(prompt, /\\rightarrow/)
+})
+
+console.log('\ninline math fallback')
+
+test('simplifyInlineMath turns known commands into Unicode', () => {
+  assert.equal(
+    simplifyInlineMath('输入食材 $\\rightarrow$ AI 智能创作'),
+    '输入食材 → AI 智能创作',
+  )
+  assert.equal(simplifyInlineMath('$2 \\times 3 \\ge 5$'), '2 × 3 ≥ 5')
+  assert.equal(simplifyInlineMath('$e^{i\\pi}$'), 'e^iπ')
+})
+
+test('simplifyInlineMath leaves money and unknown commands alone', () => {
+  // No backslash → not math. Swallowing "5, 纪念品" as math would corrupt prose.
+  assert.equal(simplifyInlineMath('门票 $5, 纪念品 $10'), '门票 $5, 纪念品 $10')
+  // Unknown command → keep it raw; a half-translated formula is worse than
+  // an untranslated one.
+  assert.equal(simplifyInlineMath('$\\unknowncmd{x}$'), '$\\unknowncmd{x}$')
 })
 
 console.log('\ndocument extraction')

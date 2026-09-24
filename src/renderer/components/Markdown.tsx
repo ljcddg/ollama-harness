@@ -18,6 +18,7 @@
  */
 
 import { useMemo, type ReactNode } from 'react'
+import { simplifyInlineMath } from '../../shared/latex.js'
 
 export function Markdown({ text }: { text: string }) {
   const blocks = useMemo(() => parseBlocks(text), [text])
@@ -253,6 +254,11 @@ function splitRow(line: string): string[] {
  * earlier, so it consumes that region before the emphasis rule ever sees it.
  */
 function renderInline(text: string): ReactNode[] {
+  // LaTeX fallback before any other rule. `$\rightarrow$` arrives from models
+  // despite the prompt ban, and no other rule here would touch it — so without
+  // this line the user sees the raw dollars and backslashes. Code blocks never
+  // pass through renderInline, so fenced code is untouched by construction.
+  const source = simplifyInlineMath(text)
   const out: ReactNode[] = []
   let plain = ''
   let i = 0
@@ -265,16 +271,16 @@ function renderInline(text: string): ReactNode[] {
   }
   const key = () => `n${out.length}`
 
-  while (i < text.length) {
-    const rest = text.slice(i)
+  while (i < source.length) {
+    const rest = source.slice(i)
 
-    if (text[i] === '`') {
-      const closing = text.indexOf('`', i + 1)
+    if (source[i] === '`') {
+      const closing = source.indexOf('`', i + 1)
       if (closing > i + 1) {
         flush()
         out.push(
           <code className="md-inline-code" key={key()}>
-            {text.slice(i + 1, closing)}
+            {source.slice(i + 1, closing)}
           </code>,
         )
         i = closing + 1
@@ -312,7 +318,7 @@ function renderInline(text: string): ReactNode[] {
       continue
     }
 
-    plain += text[i]
+    plain += source[i]
     i += 1
   }
 

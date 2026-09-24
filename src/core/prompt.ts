@@ -219,6 +219,14 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       '- Never invent file paths, function names, or API signatures. If you are not',
       '  sure something exists, search for it.',
       '- Never claim a command succeeded unless you ran it and saw the output.',
+      // The trace behind this rule: the model answered a cooking-flow question
+      // with "输入食材 $\\rightarrow$ AI 智能创作" — and the app renders plain
+      // text, so the user saw raw dollar signs and backslashes. The model
+      // reaches for LaTeX when a flow or a formula is involved; the harness
+      // cannot render it, so the prompt names the alternative explicitly.
+      '- Do not use LaTeX math ($...$, \\rightarrow, \\times) in answers. This app',
+      '  renders plain text, so LaTeX shows up as raw symbols. Write →, ×, ≥,',
+      '  or spell the idea out in words instead.',
       '- If a task is ambiguous in a way that changes what you would build, ask',
       '  before building it. If it is ambiguous but any reasonable reading works,',
       '  pick one, state the assumption, and continue.',
