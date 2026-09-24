@@ -2408,6 +2408,75 @@ await test('a reviewer that fails to run lets the turn end instead of trapping i
   assert.equal(end.data.reason.kind, 'stop', 'a broken reviewer does not hold the turn open')
 })
 
+console.log('\ntask list (`todo`)')
+
+test('the todo list is read back out of the tool call, in every shape a model sends', async () => {
+  // The shape is the part a small model gets wrong, so all three forms mean the
+  // same list. Rejecting the sloppier ones would only buy a checklist that never
+  // gets written — which is the failure this tool exists to fix.
+  const { parseTodos } = await import('../dist/shared/session.js')
+  assert.deepEqual(parseTodos([{ content: 'write pom.xml', status: 'pending' }]), [
+    { content: 'write pom.xml', status: 'pending' },
+  ])
+  assert.deepEqual(parseTodos(['write pom.xml', 'add application.yml']), [
+    { content: 'write pom.xml', status: 'pending' },
+    { content: 'add application.yml', status: 'pending' },
+  ])
+  assert.deepEqual(parseTodos('- [x] create folders\n- [>] write pom.xml\n- [ ] add config'), [
+    { content: 'create folders', status: 'completed' },
+    { content: 'write pom.xml', status: 'in_progress' },
+    { content: 'add config', status: 'pending' },
+  ])
+  // Unreadable input reads as null, so the tool can SAY so instead of silently
+  // recording an empty list and reporting success.
+  assert.equal(parseTodos(undefined), null)
+  assert.equal(parseTodos(42), null)
+  assert.equal(parseTodos([{ content: 'x', status: 'done' }]), null, 'an invented status is not a status')
+  assert.equal(parseTodos([{ content: '   ', status: 'pending' }]), null)
+})
+
+test('the current task list is the last todo call that SUCCEEDED', async () => {
+  const { deriveTodos } = await import('../dist/shared/session.js')
+  assert.deepEqual(deriveTodos([]), [])
+  const events = [
+    ev(1, 'tool/start', { callId: 'c1', name: 'todo', arguments: { todos: [{ content: 'first', status: 'pending' }] } }),
+    ev(2, 'tool/end', { callId: 'c1', name: 'todo', isError: false, content: 'ok', durationMs: 1 }),
+    // A call that failed must not replace a list that worked.
+    ev(3, 'tool/start', { callId: 'c2', name: 'todo', arguments: { todos: [{ content: 'second', status: 'completed' }] } }),
+    ev(4, 'tool/end', { callId: 'c2', name: 'todo', isError: true, content: 'bad', durationMs: 1 }),
+  ]
+  assert.deepEqual(
+    deriveTodos(events),
+    [{ content: 'first', status: 'pending' }],
+    'a failed call must not clobber a good list',
+  )
+  // The next successful call replaces the list wholesale — no ids, no merging.
+  events.push(ev(5, 'tool/start', { callId: 'c3', name: 'todo', arguments: { todos: ['one', 'two'] } }))
+  events.push(ev(6, 'tool/end', { callId: 'c3', name: 'todo', isError: false, content: 'ok', durationMs: 1 }))
+  assert.deepEqual(deriveTodos(events), [
+    { content: 'one', status: 'pending' },
+    { content: 'two', status: 'pending' },
+  ])
+  // Another tool's calls are not the task list.
+  assert.deepEqual(deriveTodos([ev(7, 'tool/end', { callId: 'zz', name: 'read', isError: false, content: '', durationMs: 1 })]), [])
+})
+
+test('the todo result says how many items are still open', async () => {
+  const { formatTodos } = await import('../dist/core/tools/todo.js')
+  const text = formatTodos([
+    { content: 'write pom.xml', status: 'completed' },
+    { content: 'add application.yml', status: 'pending' },
+  ])
+  assert.match(text, /1\/2 completed/)
+  assert.match(text, /\[x\] 1\. write pom\.xml/)
+  assert.match(text, /\[ \] 2\. add application\.yml/)
+  assert.match(text, /1 of 2 still open/)
+  // A finished list stops nagging, or the warning becomes noise the model learns to skip.
+  const done = formatTodos([{ content: 'a', status: 'completed' }])
+  assert.match(done, /Every item is completed/)
+  assert.ok(!/still open/.test(done), 'a completed list must not carry the open-items warning')
+})
+
 console.log('\npreload / IPC channel agreement')
 
 test('preload CH table matches IPC in shared/ipc.js', () => {

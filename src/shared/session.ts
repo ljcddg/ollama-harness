@@ -334,6 +334,127 @@ export function deriveContextTokens(events: readonly SessionEvent[]): number | n
   return total
 }
 
+/** Lifecycle state of one task-list entry. Three states is the whole vocabulary. */
+export type TodoStatus = 'pending' | 'in_progress' | 'completed'
+
+/** One entry in the model's own task list. */
+export interface TodoItem {
+  /** A short imperative step, e.g. "write pom.xml". */
+  content: string
+  status: TodoStatus
+}
+
+const TODO_STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'completed']
+
+/** Status implied by a `[ ]` / `[>]` / `[x]` marker, or null when there is none. */
+function statusFromMark(mark: string | undefined): TodoStatus | null {
+  if (mark === undefined) return null
+  const key = mark.trim().toLowerCase()
+  if (key === '') return 'pending'
+  if (key === 'x') return 'completed'
+  if (key === '>') return 'in_progress'
+  if (key === 'pending' || key === 'in_progress' || key === 'completed') return key
+  return null
+}
+
+/**
+ * Read a `todo` call's argument as a list, or null when nothing usable is there.
+ *
+ * Deliberately forgiving about the SHAPE, because the shape is the part a small
+ * model gets wrong. Three forms are accepted, all meaning the same list:
+ *
+ * 1. `[{ content, status }]` — the documented form.
+ * 2. `["write pom.xml", "add application.yml"]` — bare strings, all pending.
+ * 3. One newline-separated string, each line optionally marked `[ ]` / `[>]` / `[x]`.
+ *
+ * A rejected call is not a silent no-op: the tool turns null into a model-facing
+ * message, which is the same principle as the rest of the harness — make the call
+ * succeed rather than make the failure descriptive. Strictness here would only
+ * buy a checklist that never gets written, which is the failure being fixed.
+ *
+ * Values arrive from the log as `unknown`, so this must never throw on a replayed
+ * session written by an older build.
+ */
+export function parseTodos(raw: unknown): TodoItem[] | null {
+  if (raw === null || raw === undefined) return null
+
+  if (typeof raw === 'string') {
+    const items: TodoItem[] = []
+    for (const line of raw.split(/\r?\n/)) {
+      const parsed = parseTodoLine(line)
+      if (parsed !== null) items.push(parsed)
+    }
+    return items.length > 0 ? items : null
+  }
+
+  if (!Array.isArray(raw)) return null
+  const out: TodoItem[] = []
+  for (const entry of raw) {
+    if (typeof entry === 'string') {
+      const parsed = parseTodoLine(entry)
+      if (parsed === null) return null
+      out.push(parsed)
+      continue
+    }
+    if (typeof entry !== 'object' || entry === null) return null
+    const { content, status } = entry as Record<string, unknown>
+    if (typeof content !== 'string' || content.trim().length === 0) return null
+    // An entry that carries the marker inside its text is still usable.
+    const inline = parseTodoLine(content)
+    if (status === undefined && inline !== null) {
+      out.push(inline)
+      continue
+    }
+    if (typeof status !== 'string' || !TODO_STATUSES.includes(status as TodoStatus)) return null
+    out.push({ content: content.trim(), status: status as TodoStatus })
+  }
+  return out
+}
+
+/** One `[ ]`/`[>]`/`[x]` list line (with or without a leading bullet), or null. */
+function parseTodoLine(line: string): TodoItem | null {
+  const text = line.trim()
+  if (text.length === 0) return null
+  const match = /^(?:[-*+]\s*)?\[([^\]]*)\]\s*(.+)$/.exec(text)
+  if (match) {
+    const status = statusFromMark(match[1])
+    const content = (match[2] ?? '').trim()
+    if (status !== null && content.length > 0) return { content, status }
+    return null
+  }
+  const bare = text.replace(/^[-*+]\s*/, '').trim()
+  return bare.length > 0 ? { content: bare, status: 'pending' } : null
+}
+
+/**
+ * The model's current task list: the argument of the last `todo` call that succeeded.
+ *
+ * Derived, not stored — the same rule as every other view in this file. The tool
+ * replaces the list wholesale on every call, so the newest SUCCESSFUL call IS the
+ * current list; a later failed call must not erase one that worked, which is why
+ * the two events are paired by callId rather than by order alone.
+ *
+ * Needs no new event type: tool calls and results are already in the log, so the
+ * list survives resume and replays exactly as written.
+ */
+export function deriveTodos(events: readonly SessionEvent[]): TodoItem[] {
+  const byCall = new Map<ToolCallId, TodoItem[]>()
+  for (const event of events) {
+    if (event.type !== 'tool/start' || event.data.name !== 'todo') continue
+    const args = event.data.arguments
+    if (typeof args !== 'object' || args === null) continue
+    const parsed = parseTodos((args as Record<string, unknown>)['todos'])
+    if (parsed !== null) byCall.set(event.data.callId, parsed)
+  }
+  let current: TodoItem[] = []
+  for (const event of events) {
+    if (event.type !== 'tool/end' || event.data.isError) continue
+    const parsed = byCall.get(event.data.callId)
+    if (parsed !== undefined) current = parsed
+  }
+  return current
+}
+
 /** Turn/step boundary state, used to decide whether a session is mid-flight. */
 export interface TurnBoundary {
   lastTurn: number
