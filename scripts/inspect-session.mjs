@@ -62,7 +62,10 @@ if (args.includes('--list')) {
   console.log(`${root}\n`)
   for (const f of files) {
     const events = readEvents(f.id)
-    const header = events[0]?.header
+    // The header is a property of the returned array, not its first element:
+    // readEvents() `continue`s past the header line, so events[0] is already the
+    // first real event and every session listed as `?` / `(untitled)`.
+    const header = events.header
     const turns = events.filter((e) => e.type === 'turn/start').length
     const calls = events.filter((e) => e.type === 'tool/start').length
     console.log(
