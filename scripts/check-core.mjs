@@ -1467,6 +1467,198 @@ test('the shell tool says which shell it actually is', async () => {
   assert.match(prompt, process.platform === 'win32' ? /cmd\.exe/ : /shell: bash/)
 })
 
+console.log('\ndeleting without destroying (`delete`)')
+
+test('the verdict comes from the path, not from what the platform reported', async () => {
+  const { recycleVerdict } = await import('../dist/core/tools/delete.js')
+
+  // The regression this function exists for, measured on this machine:
+  // Microsoft.VisualBasic's SendToRecycleBin throws
+  // "MethodInvocationException: 无法找到指定文件" on EVERY successful deletion — an
+  // ASCII file, a Chinese-named file and a non-empty directory all landed in the
+  // bin, and all three threw. Code that reads the exception (or the exit code)
+  // as the outcome gets it backwards.
+  const falseAlarm =
+    '[exit 0] MethodInvocationException :: 使用“3”个参数调用“DeleteFile”时发生异常:“无法找到指定文件。”'
+  assert.deepEqual(
+    recycleVerdict(true, false, falseAlarm),
+    { ok: true, reason: 'removed' },
+    'a file that is gone was deleted, whatever the exception claimed',
+  )
+  assert.deepEqual(
+    recycleVerdict(true, true, 'RECYCLED'),
+    { ok: false, reason: 'still-there' },
+    'a cheerful message must not outvote the file still being there',
+  )
+  assert.deepEqual(
+    recycleVerdict(false, false, ''),
+    { ok: false, reason: 'missing' },
+    'nothing there is reported as nothing there, never as success',
+  )
+})
+
+test('a delete aimed at the working directory is refused outright', async () => {
+  const { containsPath } = await import('../dist/core/tools/delete.js')
+  const work = joinPath('D:', 'work')
+  assert.equal(containsPath(work, work), true)
+  assert.equal(containsPath(work, joinPath(work, 'src')), true, 'an ancestor contains the cwd')
+  assert.equal(containsPath(joinPath(work, 'src'), work), false)
+  assert.equal(
+    containsPath(work, joinPath('D:', 'workshop')),
+    false,
+    'a sibling that merely shares a prefix is not contained',
+  )
+})
+
+test('the delete tool asks first, and never removes anything without a yes', async () => {
+  const { deleteTool } = await import('../dist/core/tools/delete.js')
+  const prompts = []
+  const ctx = (cwd) => ({
+    cwd,
+    signal: new AbortController().signal,
+    callId: asToolCallId('del1'),
+    requestApproval: async (message) => {
+      prompts.push(message)
+      return false
+    },
+  })
+
+  const dir = await mkdtemp(joinPath(os.tmpdir(), 'harness-delete-'))
+  try {
+    const missing = await deleteTool.execute({ path: 'nope.txt' }, ctx(dir))
+    assert.equal(missing.isError, true)
+    assert.match(missing.content, /nothing at/i, 'a missing path is stated, not smoothed over')
+    assert.equal(prompts.length, 0, 'a missing path must not raise a prompt')
+
+    // The cwd is refused before any prompt: an approval prompt would imply the
+    // user could consent to something that takes the session's ground away.
+    const selfDelete = await deleteTool.execute({ path: '.' }, ctx(dir))
+    assert.equal(selfDelete.isError, true)
+    assert.match(selfDelete.content, /Refusing/)
+    assert.equal(prompts.length, 0, 'the refusal must not be negotiable')
+
+    await writeFile(joinPath(dir, 'keep.txt'), 'x', 'utf8')
+    const declined = await deleteTool.execute({ path: 'keep.txt' }, ctx(dir))
+    assert.equal(declined.isError, true)
+    assert.match(declined.content, /declined/)
+    assert.equal(prompts.length, 1, 'a real deletion asks exactly once')
+    assert.match(prompts[0], /keep\.txt/, 'the prompt names the file it is about')
+    assert.ok(existsSync(joinPath(dir, 'keep.txt')), 'a declined delete must leave the file alone')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the recycle command is built for the platform and carries its own re-check', async () => {
+  const { recycleInvocation } = await import('../dist/core/tools/delete.js')
+  const target = joinPath('D:', 'work', 'notes.txt')
+
+  const win = recycleInvocation('win32', target)
+  assert.equal(win.command, 'powershell')
+  assert.ok(win.args.includes('-EncodedCommand'), 'the script travels encoded so a code page cannot mangle a path')
+  const script = Buffer.from(win.args[win.args.length - 1], 'base64').toString('utf16le')
+  assert.match(script, /SendToRecycleBin/, 'the recycle option is what makes this recoverable')
+  assert.match(script, /Test-Path -LiteralPath/, 'the script re-checks the path instead of trusting the call')
+  assert.match(script, /catch \{ \}/, 'the known false exception is swallowed, so it cannot read as a failure')
+  assert.ok(script.includes(target), 'the target reaches the script intact')
+
+  const quoted = Buffer.from(recycleInvocation('win32', "D:\\a'b.txt").args[3], 'base64').toString('utf16le')
+  assert.ok(quoted.includes("'D:\\a''b.txt'"), 'a single quote is doubled so it cannot end the literal')
+
+  assert.equal(recycleInvocation('darwin', target).command, 'osascript')
+  const lin = recycleInvocation('linux', target)
+  assert.equal(lin.command, 'gio')
+  assert.deepEqual(lin.args, ['trash', '--', target], '`--` keeps a path starting with a dash from reading as a flag')
+})
+
+test('the shell guard fires on Windows delete verbs, and only on them', async () => {
+  const { bashTool } = await import('../dist/core/tools/bash.js')
+  const dir = await mkdtemp(joinPath(os.tmpdir(), 'harness-delguard-'))
+  const prompts = []
+  const ctx = {
+    cwd: dir,
+    signal: new AbortController().signal,
+    callId: asToolCallId('guard1'),
+    requestApproval: async (message) => {
+      prompts.push(message)
+      return false
+    },
+  }
+  try {
+    // The first is verbatim from the session that reported 已清空 after removing
+    // 2 files out of 27: it matched no pattern, so it ran with no prompt at all.
+    for (const command of [
+      'del /q *.*',
+      'erase /f notes.txt',
+      'rd /s /q build',
+      'Remove-Item -Recurse -Force target',
+      'rm -rf src',
+    ]) {
+      prompts.length = 0
+      const res = await bashTool.execute({ command }, ctx)
+      assert.equal(prompts.length, 1, `"${command}" must ask before running`)
+      assert.equal(res.isError, true, `"${command}" must not run once declined`)
+    }
+    // ...and it must not cry wolf on ordinary work, or the prompt becomes noise.
+    prompts.length = 0
+    await bashTool.execute({ command: 'echo hello' }, ctx)
+    assert.equal(prompts.length, 0, 'echo is not a deletion')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the shell guard does not mistake ordinary words for delete verbs', async () => {
+  const { bashTool } = await import('../dist/core/tools/bash.js')
+  const dir = await mkdtemp(joinPath(os.tmpdir(), 'harness-delwords-'))
+  const prompts = []
+  const ctx = {
+    cwd: dir,
+    signal: new AbortController().signal,
+    callId: asToolCallId('guard2'),
+    requestApproval: async (message) => {
+      prompts.push(message)
+      return false
+    },
+  }
+  try {
+    // `model`, `charm` and `grd` contain the letters of the verbs without being
+    // them. A word-boundary match is the difference between a guard and a nag.
+    for (const command of ['echo "a model result"', 'echo charming', 'echo format-rd']) {
+      prompts.length = 0
+      await bashTool.execute({ command }, ctx)
+      assert.equal(prompts.length, 0, `"${command}" is not a deletion`)
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the default registry offers the recoverable delete before the shell', async () => {
+  const { createDefaultRegistry, MUTATING_TOOLS } = await import('../dist/core/tools/index.js')
+  const names = createDefaultRegistry().names()
+  assert.ok(names.includes('delete'), 'without it the model keeps reaching for the shell')
+  assert.ok(
+    names.indexOf('delete') < names.indexOf('bash'),
+    'a small model picks roughly in order, so the safe one has to come first',
+  )
+  assert.ok(
+    !MUTATING_TOOLS.includes('delete'),
+    'it asks from inside its own body; listing it here would ask the user twice',
+  )
+})
+
+test('the coding prompt names delete for removals and says why', () => {
+  const prompt = buildSystemPrompt({
+    cwd: process.cwd(),
+    model: 'm',
+    platform: 'win32',
+    toolNames: ['delete', 'bash'],
+  })
+  assert.match(prompt, /Delete files with the `delete` tool/, 'the rule has to be in the prompt, not just the schema')
+  assert.match(prompt, /recycle bin/)
+})
+
 test('the shell tool never hands credentials to a child process', async () => {
   // `bash` runs whatever the model writes, so its inherited environment is the
   // one place a prompt-injected `env` could print the user's API keys straight

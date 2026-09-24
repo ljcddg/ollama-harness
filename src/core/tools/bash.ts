@@ -67,6 +67,21 @@ export function scrubbedEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Pro
 
 const DANGEROUS_PATTERNS: Array<{ re: RegExp; why: string }> = [
   { re: /\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rf]/i, why: 'recursive or forced delete' },
+  // Windows delete verbs, which the recursive-delete pattern above never
+  // matched. `del /q *.*` removes files with no output and exit 0, so a model
+  // can report a directory as emptied after removing two files out of
+  // twenty-seven — and nothing in the output contradicts it. `del` is not
+  // recursive, but it is still a permanent delete of whatever sits in the
+  // current directory, and `delete` exists to do this recoverably instead.
+  { re: /\brm\b/i, why: 'delete files immediately, bypassing the recycle bin' },
+  { re: /\b(del|erase)\b/i, why: 'delete files immediately, bypassing the recycle bin' },
+  // `rd` is two letters, so a word boundary is not a strong enough test: it
+  // fires on `format-rd`, which `echo` produces all the time. Requiring the
+  // start of a command keeps the real calls — `rd /s /q build`,
+  // `mkdir x & rd /s /q y` — and drops the coincidences.
+  { re: /(?:^|[&|;]|\n)\s*rd\s+/im, why: 'remove a directory, bypassing the recycle bin' },
+  { re: /\brmdir\b/i, why: 'remove a directory, bypassing the recycle bin' },
+  { re: /\bRemove-Item\b/i, why: 'delete files or directories, bypassing the recycle bin' },
   { re: /\b(mkfs|fdisk|diskpart)\b/i, why: 'filesystem formatting' },
   { re: /\bdd\s+.*of=\/dev\//i, why: 'raw device write' },
   { re: /:\s*\(\s*\)\s*\{.*\}\s*;\s*:/, why: 'fork bomb' },

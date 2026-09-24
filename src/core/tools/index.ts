@@ -8,6 +8,7 @@
  */
 
 import { bashTool } from './bash.js'
+import { deleteTool } from './delete.js'
 import { editTool, globTool, grepTool, readTool, writeTool } from './files.js'
 import { listTool } from './list.js'
 import { createSearchTool, type SearchToolDeps } from './search.js'
@@ -16,7 +17,14 @@ import { todoTool } from './todo.js'
 import { createWebTool } from './web.js'
 import { ToolRegistry } from './types.js'
 
-/** Tools that mutate state and are therefore approval candidates. */
+/**
+ * Tools that mutate state and are therefore approval candidates.
+ *
+ * `delete` is deliberately absent: it asks for approval on every call from
+ * inside its own body, because the prompt has to name the path and say
+ * whether it is a directory. Listing it here as well would ask the user
+ * twice for the same file.
+ */
 export const MUTATING_TOOLS = ['write', 'edit', 'bash'] as const
 
 /** Live capabilities the tool set can be wired to. */
@@ -53,6 +61,11 @@ export function createDefaultRegistry(deps?: RegistryDeps): ToolRegistry {
   registry.register(todoTool)
   registry.register(editTool)
   registry.register(writeTool)
+  // Placed directly above `bash` because it competes with it: the habit this
+  // tool exists to break is reaching for `del`/`rm`, and a small model picks
+  // tools roughly in the order it sees them. A shell delete is permanent and
+  // silent; this one is recoverable and reports what happened to the file.
+  registry.register(deleteTool)
   registry.register(bashTool)
   return registry
 }

@@ -57,6 +57,22 @@ directly, with an absolute path to the managed Node binary if `node` is not on
 
       node -e "import('./dist/core/skills.js').then(m => m.discoverSkills(process.cwd()).then(c => console.log(c.skills.map(s => s.name), c.problems)))"
 
+- **Deletions go through the `delete` tool, not the shell.** `rm`, `del`, `erase`,
+  `rd`, `rmdir` and `Remove-Item` are all in the shell guard's `DANGEROUS_PATTERNS`.
+  The guard is there because `del /q *.*` once removed 2 files out of 27, printed
+  nothing and exited 0, so nothing in the output could contradict the model
+  reporting that it had emptied the directory.
+
+- **A recycle-bin delete cannot be judged by an exit code or an exception.**
+  Measured on this machine: `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile`
+  and `DeleteDirectory` with `SendToRecycleBin` throw
+  `MethodInvocationException: 无法找到指定文件` on every *successful* deletion. That
+  is why `src/core/tools/delete.ts` re-checks the path afterwards and treats the
+  platform's output as diagnostics only. To verify the real path end to end, run
+  the throwaway probe if it is still in `.trash/`:
+  `node .trash/tmp-probe-delete-live.mjs` — it bins three test files and does not
+  empty the bin.
+
 ## Before you say you are done
 
 Report **which** gates you ran and **what they printed**. "The gates pass" is not

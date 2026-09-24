@@ -263,8 +263,19 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       '- If a task is ambiguous in a way that changes what you would build, ask',
       '  before building it. If it is ambiguous but any reasonable reading works,',
       '  pick one, state the assumption, and continue.',
-      '- Do not run destructive commands (recursive deletes, force pushes, history',
-      '  rewrites) without explaining why first.',
+      // The trace behind this rule: asked to clear a directory the model ran
+      // `del /q *.*`, which is not recursive — it removed the 2 files in the
+      // root and left 25 behind, printed nothing, and exited 0, so the
+      // transcript could not contradict "已清空". The prompt already said not
+      // to run destructive commands; a rule about intent does not stop a
+      // command that does not look destructive.
+      '- Delete files with the `delete` tool, never with the shell. `del`,',
+      '  `erase` and `rm` destroy the file for good and print nothing, so a',
+      '  mistaken path can neither be undone by the user nor be noticed from the',
+      '  output. `delete` moves things to the recycle bin and re-checks the path,',
+      '  so its result says what actually happened to the file.',
+      '- Do not run other destructive commands (force pushes, history rewrites)',
+      '  without explaining why first.',
     ].join('\n'),
   )
 
