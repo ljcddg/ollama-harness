@@ -172,6 +172,34 @@ async function planSpawn(command: string): Promise<SpawnSpec> {
   return { file: '/bin/bash', args: [file], shell: false, scratch }
 }
 
+const IS_WINDOWS = process.platform === 'win32'
+
+/**
+ * What the model is told about the shell it is actually talking to.
+ *
+ * This tool is named `bash`, but on Windows it runs through `cmd.exe`, and that
+ * contradiction cost a real session its entire project. Asked to scaffold a Spring
+ * Boot app, the model wrote `#` comments, `mkdir -p`, and an `echo '<pom.xml>' >
+ * pom.xml` — all of it bash. cmd rejected every line, the directories were never
+ * created, the Java files landed flat in the working directory, and the model —
+ * quite reasonably trusting the name of the tool it was calling — spent four
+ * review rounds blaming "环境限制" (session a5b2ece6).
+ *
+ * Two things have to be said explicitly, because both are where bash habits break
+ * hardest here: which shell this is, and that file CONTENTS belong to `write`.
+ * `echo '<long text>' > file` is the idiom that fails most completely — it either
+ * errors out or writes the shell's own mangled version of the text.
+ */
+const SHELL_NOTE = IS_WINDOWS
+  ? 'This command runs through cmd.exe on this machine, NOT bash. Use cmd syntax: ' +
+    'no `#` comments, no `mkdir -p` (cmd has no -p), no heredocs, no single-quoted ' +
+    'multi-line arguments. One command per line; `&&` and `&` both work. '
+  : 'This command runs through bash on this machine. '
+
+const FILE_WRITE_NOTE =
+  'Do NOT write a file\'s contents through the shell (`echo ... > file`) — use the ' +
+  '`write` tool, which creates the parent directories too and cannot mangle the text.'
+
 export interface BashToolOptions {
   /** Which shell binary to use. Defaults to the platform default. */
   shell?: string
@@ -182,8 +210,10 @@ export const bashTool: Tool = {
   description:
     'Run a shell command in the working directory and return its output. Use this for ' +
     'builds, tests, git operations, and anything the other tools cannot express. ' +
+    SHELL_NOTE +
     'Multi-line commands are supported and run in order. ' +
-    'Prefer the dedicated file tools for reading and editing, because they truncate ' +
+    FILE_WRITE_NOTE +
+    ' Prefer the dedicated file tools for reading and editing, because they truncate ' +
     'more intelligently and fail more clearly.',
   parameters: {
     type: 'object',

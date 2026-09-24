@@ -869,6 +869,36 @@ if (process.platform === 'win32') {
   })
 }
 
+test('the shell tool says which shell it actually is', async () => {
+  // The bug: a tool named `bash` that runs cmd.exe, plus a prompt line reading
+  // "PowerShell / cmd". A model asked to scaffold a project trusted the tool name,
+  // wrote `mkdir -p` and `#` comments, had every line rejected, and spent four
+  // review rounds blaming "环境限制" while the project was never created
+  // (session a5b2ece6). The model-facing text IS the contract, so assert it.
+  const { bashTool } = await import('../dist/core/tools/bash.js')
+  assert.match(
+    bashTool.description,
+    /`write` tool/,
+    'file contents must be routed to the write tool, not `echo ... > file`',
+  )
+  if (process.platform === 'win32') {
+    assert.match(bashTool.description, /cmd\.exe/, 'the description must name the real shell')
+    assert.match(bashTool.description, /NOT bash/, 'and must say what it is not')
+  }
+
+  const prompt = buildSystemPrompt({
+    cwd: process.cwd(),
+    model: 'probe',
+    platform: process.platform,
+    toolNames: ['bash'],
+  })
+  assert.ok(
+    !/PowerShell \/ cmd/.test(prompt),
+    'the ambiguous "PowerShell / cmd" must not come back — it is what the model guessed wrong from',
+  )
+  assert.match(prompt, process.platform === 'win32' ? /cmd\.exe/ : /shell: bash/)
+})
+
 test('the shell tool never hands credentials to a child process', async () => {
   // `bash` runs whatever the model writes, so its inherited environment is the
   // one place a prompt-injected `env` could print the user's API keys straight

@@ -93,7 +93,11 @@ function buildPersonaSection(persona: PersonaSettings): string | null {
 }
 
 export function buildSystemPrompt(ctx: PromptContext): string {
-  const shell = ctx.platform === 'win32' ? 'PowerShell / cmd' : 'bash'
+  // Name the shell EXACTLY. "PowerShell / cmd" left the choice open, and a model
+  // reading a tool called `bash` resolved that ambiguity the wrong way — it wrote
+  // a bash script, cmd rejected every line, and the project never got scaffolded
+  // (session a5b2ece6). A wrong answer beats an open question here.
+  const shell = ctx.platform === 'win32' ? 'cmd.exe — NOT bash, NOT PowerShell' : 'bash'
   const sections: string[] = []
 
   sections.push(
