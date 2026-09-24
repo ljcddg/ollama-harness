@@ -11,6 +11,9 @@
  */
 
 import { spawn } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Tool, ToolResult } from './types.js'
 import { resolveToolPath } from './paths.js'
 import { decodeBytes } from '../extract.js'
@@ -79,6 +82,96 @@ const READ_ONLY_PREFIXES = [
   'git status', 'git log', 'git diff', 'git show', 'git branch', 'node -v', 'npm -v',
 ]
 
+/**
+ * What the shell itself says when it could not run a command.
+ *
+ * These exist because exit code 0 does not mean "everything worked": the status
+ * of a command line is the LAST command's status, so a line whose first command
+ * does not exist can still exit 0 — and "exit code 0" is exactly what the model
+ * reads as success. Session 67c03b60 is the case that put these here: the model
+ * scaffolded a project with a multi-line `bash` call, only the first line ran,
+ * `touch` did not exist on the machine, and the tool reported a clean exit 0.
+ *
+ * Anchored to the start of a line, and the POSIX arm additionally requires the
+ * shell's own `bash:` / `sh:` prefix. Both details exist to keep a program that
+ * merely PRINTS this text — `echo "bash: foo: command not found"`, or a grep that
+ * found it in a log — from being mistaken for the shell failing to run something.
+ */
+const SHELL_CANNOT_RUN: RegExp[] = [
+  /(?:^|\n)\s*'([^'\r\n]+)' is not recognized as an internal or external command/i,
+  /(?:^|\n)\s*'([^'\r\n]+)' 不是内部或外部命令/,
+  /(?:^|\n)\s*(?:\S*\/)?(?:ba|da|k|z)?sh:\s+(?:[^:\n]*:\s+)*([^\s:]+): command not found\b/,
+]
+
+/**
+ * The command name the shell reported it could not run, or null.
+ *
+ * Used only when the exit code claimed success — a non-zero code is already
+ * reported honestly and needs no second opinion.
+ */
+export function shellFailureIn(output: string): string | null {
+  for (const re of SHELL_CANNOT_RUN) {
+    const found = output.match(re)
+    if (found?.[1]) return found[1]
+  }
+  return null
+}
+
+/** How one command will be handed to the operating system. */
+interface SpawnSpec {
+  file: string
+  args: string[]
+  /** `true` lets Node pick the shell; a string names one. */
+  shell: boolean | string
+  /** Scratch directory holding a generated script, removed once the child settles. */
+  scratch: string | null
+}
+
+/**
+ * Decide how to run a command, routing multi-line text through a script file.
+ *
+ * `spawn(cmd, { shell: true })` on Windows is `cmd.exe /d /s /c "<cmd>"`, and
+ * cmd.exe executes only the FIRST line of a quoted string that contains
+ * newlines: the rest are dropped with no diagnostic at all, while the exit code
+ * still reports the first command's success. A model that scaffolds a project in
+ * one multi-line call is therefore told "exit 0" while almost nothing happened.
+ *
+ * Writing the text to a script file and executing that file restores the real
+ * semantics, including `for` / `if` blocks and comments. Folding the lines
+ * together with `&&` would fix the truncation and destroy those constructs,
+ * which is a worse trade for the commands that need them most.
+ */
+async function planSpawn(command: string): Promise<SpawnSpec> {
+  const isWindows = process.platform === 'win32'
+
+  if (!/[\r\n]/.test(command)) {
+    return {
+      file: command,
+      args: [],
+      shell: isWindows ? true : '/bin/bash',
+      scratch: null,
+    }
+  }
+
+  const scratch = await mkdtemp(join(tmpdir(), 'ollama-harness-sh-'))
+  if (isWindows) {
+    const file = join(scratch, 'command.cmd')
+    // `@echo off` keeps the script's own lines out of the captured output, so
+    // what the model reads is what the commands printed.
+    await writeFile(file, `@echo off\r\n${command}\r\n`, 'utf8')
+    return {
+      file: process.env.ComSpec ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', file],
+      shell: false,
+      scratch,
+    }
+  }
+
+  const file = join(scratch, 'command.sh')
+  await writeFile(file, `${command}\n`, 'utf8')
+  return { file: '/bin/bash', args: [file], shell: false, scratch }
+}
+
 export interface BashToolOptions {
   /** Which shell binary to use. Defaults to the platform default. */
   shell?: string
@@ -89,6 +182,7 @@ export const bashTool: Tool = {
   description:
     'Run a shell command in the working directory and return its output. Use this for ' +
     'builds, tests, git operations, and anything the other tools cannot express. ' +
+    'Multi-line commands are supported and run in order. ' +
     'Prefer the dedicated file tools for reading and editing, because they truncate ' +
     'more intelligently and fail more clearly.',
   parameters: {
@@ -144,17 +238,26 @@ export function isReadOnlyCommand(command: string): boolean {
   return READ_ONLY_PREFIXES.some((p) => trimmed.startsWith(p))
 }
 
-function runCommand(
+async function runCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
   signal: AbortSignal,
 ): Promise<ToolResult> {
-  return new Promise((resolve) => {
-    const isWindows = process.platform === 'win32'
-    const child = spawn(command, {
+  let spec: SpawnSpec
+  try {
+    spec = await planSpawn(command)
+  } catch (error) {
+    return {
+      content: `Could not prepare the command: ${(error as Error).message}`,
+      isError: true,
+    }
+  }
+
+  return await new Promise((resolve) => {
+    const child = spawn(spec.file, spec.args, {
       cwd,
-      shell: isWindows ? true : '/bin/bash',
+      shell: spec.shell,
       windowsHide: true,
       env: scrubbedEnv(),
     })
@@ -219,6 +322,11 @@ function runCommand(
       settled = true
       clearTimeout(timer)
       signal.removeEventListener('abort', onAbort)
+      // Best effort: a child that outlived the process tree can still hold the
+      // file on Windows, and a leaked temp directory is not worth failing over.
+      if (spec.scratch !== null) {
+        void rm(spec.scratch, { recursive: true, force: true }).catch(() => {})
+      }
       resolve(result)
     }
 
@@ -245,8 +353,23 @@ function runCommand(
     })
 
     child.on('close', (code) => {
+      const body = render()
+      // The exit code is the LAST command's status, so it is not evidence that
+      // every command succeeded. When the shell says it could not run something,
+      // say so instead of passing a bare 0 along as a verdict.
+      const failedToRun = code === 0 ? shellFailureIn(body) : null
+      if (failedToRun !== null) {
+        finish({
+          content:
+            `${body}\n\n[exit code 0, but the shell could not run \`${failedToRun}\`. ` +
+            'An exit code only reports the LAST command of the line, so it is not proof ' +
+            'that this command did what it says. Fix or drop the failing command and run it again.]',
+          isError: true,
+        })
+        return
+      }
       finish({
-        content: `${render()}\n\n[exit code ${code ?? 'null'}]`,
+        content: `${body}\n\n[exit code ${code ?? 'null'}]`,
         isError: code !== 0,
       })
     })

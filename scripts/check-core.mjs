@@ -909,6 +909,31 @@ test('the shell tool never hands credentials to a child process', async () => {
   )
 })
 
+test('a shell that could not run a command is not reported as exit code 0', async () => {
+  // Session 67c03b60: the model scaffolded a project with a multi-line `bash`
+  // call, most of it never ran, and the tool passed `[exit code 0]` along as a
+  // verdict. The exit code of a command line is the LAST command's status, so
+  // the shell's own "I could not run this" has to outrank it.
+  const { shellFailureIn } = await import('../dist/core/tools/bash.js')
+  // The real diagnostics, one per shape the tool can end up driving.
+  assert.equal(
+    shellFailureIn("'touch' is not recognized as an internal or external command,\r\noperable program or batch file."),
+    'touch',
+  )
+  assert.equal(shellFailureIn("'touch' 不是内部或外部命令，也不是可运行的程序\r\n或批处理文件。"), 'touch')
+  assert.equal(shellFailureIn('bash: touch: command not found'), 'touch')
+  assert.equal(shellFailureIn('bash: line 3: rsync: command not found'), 'rsync')
+  assert.equal(shellFailureIn('/bin/bash: /tmp/command.sh: line 7: pnpm: command not found'), 'pnpm')
+  // Honest output is not a failure.
+  assert.equal(shellFailureIn('[no output]'), null)
+  assert.equal(shellFailureIn('Maven home: D:\\maven\\apache-maven-3.9.9'), null)
+  // A program that merely PRINTS the phrase must not be mistaken for the shell.
+  // This is the false positive the first cut of the guard had, caught by probe.
+  assert.equal(shellFailureIn('"bash: foo: command not found"'), null)
+  assert.equal(shellFailureIn('log.txt:bash: foo: command not found'), null)
+  assert.equal(shellFailureIn("echo 'touch' is not recognized as an internal or external command"), null)
+})
+
 test('routes known document extensions through the decoder', () => {
   for (const path of ['a.pdf', 'a.PDF', 'a.docx', 'a.doc', 'a.odt', 'a.rtf']) {
     assert.equal(isDocumentPath(path), true, `${path} should be treated as a document`)
