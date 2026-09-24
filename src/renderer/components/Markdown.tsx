@@ -17,7 +17,7 @@
  *    rendered inside an app that sits in front of a Node IPC surface.
  */
 
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { simplifyInlineMath } from '../../shared/latex.js'
 
 export function Markdown({ text }: { text: string }) {
@@ -100,18 +100,66 @@ function BlockView({ block }: { block: Block }) {
   }
 }
 
+/**
+ * Code blocks longer than this many lines start folded.
+ *
+ * A two-line snippet is not what buries a conversation, and giving it a header
+ * would make it taller than the code it hides — so short blocks stay open and
+ * nothing changes for them. The long ones are exactly what the eye has to wade
+ * through to reach the sentence after them, and those start closed.
+ */
+const CODE_FOLD_LINES = 6
+
 function CodeBlock({ lang, text, open }: { lang: string; text: string; open: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const lines = text.length === 0 ? 0 : text.split('\n').length
+  // Folded from the first line the fence produces, streaming or not: a rule that
+  // only applies once output has stopped is a rule the user cannot predict. The
+  // header keeps reporting the line count, so a block being written still shows
+  // it is growing.
+  const foldable = lines > CODE_FOLD_LINES
+  const folded = foldable && !expanded
+
   return (
-    <div className="md-code-block">
+    <div className={`md-code-block${folded ? ' is-folded' : ''}`}>
       <div className="md-code-head">
-        <span className="md-code-lang">{lang || 'text'}</span>
+        <button
+          type="button"
+          className="md-code-toggle"
+          onClick={() => setExpanded((value) => !value)}
+          disabled={!foldable}
+          aria-expanded={foldable ? expanded : undefined}
+        >
+          {foldable && (
+            <svg
+              className={`md-code-chevron${expanded ? ' is-open' : ''}`}
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              aria-hidden="true"
+            >
+              <path
+                d="M3 1.5L7.5 5L3 8.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+          <span className="md-code-lang">{lang || 'text'}</span>
+          {foldable && <span className="md-code-lines">{lines} 行</span>}
+        </button>
         <CopyButton text={text} label="复制代码" />
       </div>
-      {/* A fence still streaming has no closing marker; showing one would make
-          the buffer look like it ended. */}
-      <pre className="md-code-body">
-        <code>{text}</code>
-      </pre>
+      {!folded && (
+        // A fence still streaming has no closing marker; showing one would make
+        // the buffer look like it ended.
+        <pre className="md-code-body">
+          <code>{text}</code>
+        </pre>
+      )}
       {open && <div className="md-code-pending">还在输出…</div>}
     </div>
   )

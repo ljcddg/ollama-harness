@@ -1059,6 +1059,50 @@ kbd {
   color: var(--text-tertiary);
 }
 
+/* The header doubles as the fold control, so it has to look pressable without
+   looking like a separate button — hence no background and no border of its
+   own, plus a hover that only deepens the label. */
+.md-code-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.md-code-toggle:disabled {
+  cursor: default;
+}
+
+.md-code-toggle:not(:disabled):hover .md-code-lang {
+  color: var(--text-secondary);
+}
+
+.md-code-chevron {
+  flex: none;
+  color: var(--text-tertiary);
+  transition: transform 120ms ease;
+}
+
+.md-code-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.md-code-lines {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* Folded, the block is a single header line — so the border has to close under
+   it rather than sit above a body that is not there. */
+.md-code-block.is-folded .md-code-head {
+  border-bottom: none;
+}
+
 .md-table-wrap {
   margin: 0 0 12px;
   overflow-x: auto;
