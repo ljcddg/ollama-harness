@@ -907,6 +907,66 @@ test('a timeout can say it was waiting for input when the last line is a prompt'
   assert.equal(looksLikeWaitingForInput(''), false)
 })
 
+test('a bash comment becomes a comment cmd will not try to run', async () => {
+  const { adaptComments } = await import('../dist/core/tools/bash.js')
+  // cmd has no `#` comment, so a bash-style comment is a command name cmd fails
+  // on — and the text after the `#` is what gets mangled into fragments. Session
+  // 0b5d68df handed the model `'em'` and `'izr'` and nothing else.
+  assert.equal(adaptComments('mkdir x\n# a comment\ncd x'), 'mkdir x\nREM\ncd x')
+  assert.equal(adaptComments('mkdir x\n  # indented\ncd x'), 'mkdir x\n  REM\ncd x')
+  // A `#` inside a line is an ordinary character in cmd and may be an argument.
+  assert.equal(adaptComments('echo "#1 item"'), 'echo "#1 item"')
+  assert.equal(adaptComments('echo 标签 | findstr 标'), 'echo 标签 | findstr 标')
+})
+
+if (process.platform === 'win32') {
+  const shellContext = (cwd) => ({
+    cwd,
+    signal: new AbortController().signal,
+    callId: 'test',
+    requestApproval: async () => true,
+  })
+
+  test('a multi-line command with a Chinese comment runs every line', async () => {
+    // The shape from session 0b5d68df, with the slow build replaced by a marker:
+    // mkdir, cd, a bash comment in Chinese, then the work. Before this fix the
+    // comment line was read as a command and the model got back a scatter.
+    const { bashTool } = await import('../dist/core/tools/bash.js')
+    const dir = await mkdtemp(joinPath(os.tmpdir(), 'harness-comment-'))
+    try {
+      const command = [
+        'mkdir probe',
+        'cd probe',
+        '# 使用 Spring Initializr 创建一个基础项目 (假设我们使用 Maven)',
+        'echo reached-the-end',
+      ].join('\n')
+      const result = await bashTool.execute({ command }, shellContext(dir))
+      assert.equal(result.isError, false, `got ${JSON.stringify(result.content)}`)
+      assert.match(result.content, /reached-the-end/, 'the last line must have run')
+      assert.ok(!result.content.includes('不是内部或外部命令'), 'a comment is not a command')
+      assert.ok(existsSync(joinPath(dir, 'probe')), 'the directory must exist')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a multi-line command with Chinese arguments keeps its line boundaries', async () => {
+    // The encoding half, and the reason the scratch script is no longer written
+    // as UTF-8. cmd reads a batch file in the OEM code page, so the bytes were
+    // re-split at the wrong boundaries: `echo 你好世界` / `echo 第二行` came back
+    // as `浣犲ソ涓栫晫` followed by a complaint about `绗簩琛` — the second line's
+    // own `echo` swallowed, and nothing in the output naming the real cause.
+    const { bashTool } = await import('../dist/core/tools/bash.js')
+    const result = await bashTool.execute(
+      { command: 'echo 你好世界\necho 第二行' },
+      shellContext(os.tmpdir()),
+    )
+    assert.equal(result.isError, false, `got ${JSON.stringify(result.content)}`)
+    assert.match(result.content, /你好世界/)
+    assert.match(result.content, /第二行/, 'the second line must survive intact')
+  })
+}
+
 if (process.platform === 'win32') {
   test('the shell tool decodes Windows OEM console output (cp936)', async () => {
     // The real bug: `dir` on a Chinese Windows writes code page 936, so reading

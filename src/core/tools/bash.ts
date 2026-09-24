@@ -170,6 +170,107 @@ interface SpawnSpec {
 }
 
 /**
+ * Comments a shell that is not bash will try to execute.
+ *
+ * cmd.exe has no `#` comment, so a model scaffolding in bash style writes a line
+ * cmd reads as a command name and fails on. Whatever text follows the `#` makes
+ * it worse: the scratch script is written as UTF-8 while cmd reads it in the OEM
+ * code page, so a Chinese comment is decoded into a different string and then
+ * chopped at the wrong byte boundaries. The model is handed back a scatter of
+ * fragments — the session that produced this fix got `'em'` and `'izr'` — which
+ * says nothing about the command that actually failed.
+ *
+ * The comment carries no meaning for the run, so the cheapest correct answer is
+ * to convert it to the comment cmd does have, and drop the text that would be
+ * mangled. Indentation is kept so a commented line still reads as part of its
+ * block. Only whole lines are touched: a `#` mid-line is an ordinary character in
+ * cmd and may well be part of an argument.
+ */
+export function adaptComments(command: string): string {
+  return command
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trimStart()
+      if (!trimmed.startsWith('#')) return line
+      return `${line.slice(0, line.length - trimmed.length)}REM`
+    })
+    .join('\n')
+}
+
+/** How long to wait for PowerShell to re-encode a script before giving up. */
+const PS_WRITE_TIMEOUT_MS = 10_000
+
+/**
+ * Write the scratch script in the code page cmd will read it in.
+ *
+ * cmd reads a batch file using the OEM code page — 936 on a Chinese install —
+ * while `writeFile` produces UTF-8. For ASCII the two agree, which is why almost
+ * every script works and why this stayed hidden. A non-ASCII character does not
+ * merely come out as mojibake: the bytes are re-split at the wrong boundaries,
+ * so `echo 你好世界` followed by `echo 第二行` produced `浣犲ソ涓栫晫` and then cmd
+ * tried to run `绗簩琛` — swallowing the second line's own `echo`. The model is
+ * handed a command name that does not exist, and nothing in that output points
+ * at the encoding.
+ *
+ * Node cannot encode GBK, so PowerShell writes the file. It ships with every
+ * Windows install; `-EncodedCommand` carries the (short, fixed) logic as
+ * UTF-16LE base64 so quoting and code pages never enter the picture, and the
+ * command text itself arrives on stdin as UTF-8, which has no length limit.
+ *
+ * ASCII scripts skip all of it, so the common case stays a single `writeFile`.
+ */
+async function writeScriptFile(file: string, text: string): Promise<void> {
+  // cmd reads a batch file CRLF at a time. A lone LF is tolerated while the
+  // script is all ASCII and mis-parsed the moment a multi-byte character is in
+  // play — `echo 第二行` came back as a complaint about `o`, four bytes of the
+  // previous line having been consumed. Normalising the separator is cheaper
+  // than reasoning about when the tolerance holds.
+  const script = text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n')
+
+  if (!/[^\x00-\x7F]/.test(script)) {
+    await writeFile(file, script, 'utf8')
+    return
+  }
+
+  const logic =
+    '[Console]::InputEncoding=[Text.Encoding]::UTF8;' +
+    '$t=[Console]::In.ReadToEnd();' +
+    `[IO.File]::WriteAllText('${file.replace(/'/g, "''")}', $t, [Text.Encoding]::GetEncoding(936))`
+
+  const written = await new Promise<boolean>((resolve) => {
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    const finish = (value: boolean) => {
+      if (settled) return
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      resolve(value)
+    }
+
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(logic, 'utf16le').toString('base64')],
+      { windowsHide: true },
+    )
+    timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish(false)
+    }, PS_WRITE_TIMEOUT_MS)
+    child.on('error', () => finish(false))
+    child.on('close', (code) => finish(code === 0))
+    child.stdin.on('error', () => {
+      // Reported through the close event; a broken pipe must not throw.
+    })
+    child.stdin.end(script, 'utf8')
+  })
+
+  if (written) return
+  // Fall back rather than refuse: a UTF-8 script still runs its ASCII lines
+  // correctly, which beats not running the command at all.
+  await writeFile(file, script, 'utf8')
+}
+
+/**
  * Decide how to run a command, routing multi-line text through a script file.
  *
  * `spawn(cmd, { shell: true })` on Windows is `cmd.exe /d /s /c "<cmd>"`, and
@@ -179,9 +280,9 @@ interface SpawnSpec {
  * one multi-line call is therefore told "exit 0" while almost nothing happened.
  *
  * Writing the text to a script file and executing that file restores the real
- * semantics, including `for` / `if` blocks and comments. Folding the lines
- * together with `&&` would fix the truncation and destroy those constructs,
- * which is a worse trade for the commands that need them most.
+ * semantics, including `for` / `if` blocks. Folding the lines together with `&&`
+ * would fix the truncation and destroy those constructs, which is a worse trade
+ * for the commands that need them most.
  */
 async function planSpawn(command: string): Promise<SpawnSpec> {
   const isWindows = process.platform === 'win32'
@@ -200,7 +301,7 @@ async function planSpawn(command: string): Promise<SpawnSpec> {
     const file = join(scratch, 'command.cmd')
     // `@echo off` keeps the script's own lines out of the captured output, so
     // what the model reads is what the commands printed.
-    await writeFile(file, `@echo off\r\n${command}\r\n`, 'utf8')
+    await writeScriptFile(file, `@echo off\r\n${adaptComments(command)}\r\n`)
     return {
       file: process.env.ComSpec ?? 'cmd.exe',
       args: ['/d', '/s', '/c', file],
