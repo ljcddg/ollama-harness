@@ -48,6 +48,14 @@ directly, with an absolute path to the managed Node binary if `node` is not on
 - The app is pinned to a software raster path, so `backdrop-filter` and large
   blurs cost a full-window CPU blur every frame. There is a probe that shouts if
   one comes back.
+- A skill in `.SKILL/` is only live if the loader accepts it: a bundle
+  (`<name>/SKILL.md`), or a flat `.md` that opens with `---`; a kebab-case name
+  (taken from the path, so there is no `name:` field); and a `description`, which
+  is the only thing routing reads. A malformed one is reported in the prompt
+  rather than skipped, so it fails late — confirm it is discovered, not merely
+  written:
+
+      node -e "import('./dist/core/skills.js').then(m => m.discoverSkills(process.cwd()).then(c => console.log(c.skills.map(s => s.name), c.problems)))"
 
 ## Before you say you are done
 
