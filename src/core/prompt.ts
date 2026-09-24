@@ -263,8 +263,19 @@ export function buildReviewPrompt(request: string): string {
     '  ]',
     '}',
     '',
-    'List one finding per distinct requirement. Leave findings empty if the request',
-    'stated no concrete requirements.',
+    'List one finding per distinct requirement, following these rules:',
+    '',
+    '- Derive requirements only from the request above. Never invent a',
+    '  requirement the user did not state — judging finished work against an',
+    '  imagined deliverable rejects work that actually succeeded.',
+    '- A vague request still has requirements. "帮我查看一下这个项目" means:',
+    '  describe what the project is, grounded in files actually read in the',
+    '  transcript. An answer that guesses from directory names ("似乎是前端")',
+    '  without reading them does not meet it.',
+    '- Phrase each requirement as a verifiable condition ("the answer names',
+    '  which files it read"), never as the raw request sentence.',
+    '- Use "unclear" when the transcript cannot prove or disprove a point. Do',
+    '  not mark "missing" for something the request never asked for.',
   ].join('\n')
 }
 

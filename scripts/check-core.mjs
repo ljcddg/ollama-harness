@@ -547,6 +547,18 @@ test('tells the reviewer to distrust the completion summary', () => {
   assert.match(prompt, /Do not trust the final summary/)
 })
 
+test('the reviewer has a yardstick even for vague requests', () => {
+  // The bug this pins: the old prompt said "Leave findings empty if the
+  // request stated no concrete requirements", so 帮我查看一下这个项目 → empty
+  // findings → match → a one-line "似乎是前端" guess passed the gate.
+  const prompt = buildReviewPrompt('帮我查看一下这个项目')
+  assert.ok(!prompt.includes('Leave findings empty'), 'the empty-findings loophole is gone')
+  assert.match(prompt, /Never invent/)
+  assert.match(prompt, /A vague request still has requirements/)
+  assert.match(prompt, /"unclear"/)
+  assert.match(prompt, /never as the raw request sentence/)
+})
+
 console.log('\ndocument extraction')
 
 /**
