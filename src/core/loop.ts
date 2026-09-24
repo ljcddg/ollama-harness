@@ -221,6 +221,16 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
   /** Self-reviews spent this turn — see MAX_REVIEW_ROUNDS. */
   let reviewRounds = 0
 
+  /**
+   * Convergence memory for the review gate: the open requirements and the
+   * answer text from the last FAILED review. A re-review that raises the same
+   * objections to a changed answer is reviewer drift (accept); a failed
+   * re-review of an UNCHANGED answer means the correction changed nothing
+   * (escalate immediately).
+   */
+  let prevOpenFindings = ''
+  let prevReviewedAnswer = ''
+
   try {
     for (let step = 1; step <= maxSteps; step++) {
       if (signal.aborted) return finishTurn({ kind: 'aborted' })
@@ -467,7 +477,31 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
           // the honest outcome — the alternative is punishing the model for the
           // harness's error, on a turn that may well be complete.
           if (review && !reviewPassed(review)) {
-            if (reviewRounds < MAX_REVIEW_ROUNDS) {
+            // Two "stop now" shapes, checked BEFORE spending another round —
+            // both observed live on gemma4:e2b:
+            //
+            // 1. The model re-answered (with new substance) and the reviewer
+            //    repeats the SAME open requirements. Re-asking cannot add
+            //    evidence: the reviewer is the same model as the worker, and
+            //    when it contradicts itself (its own finding text reads
+            //    "(已完成)" while the verdict stays partial) a third identical
+            //    objection can only loop. The answer stands.
+            // 2. The model's answer did not change AT ALL since the last
+            //    failed review — the correction provably changed nothing, so
+            //    the remaining rounds would arrive at the same place. Escalate
+            //    immediately instead of burning them.
+            const openKey = review.findings
+              .filter((finding) => finding.status !== 'met')
+              .map((finding) => finding.requirement.trim().toLowerCase().replace(/\s+/g, ' '))
+              .sort()
+              .join('|')
+            const answerKey = text.trim().replace(/\s+/g, ' ')
+            const repeatedObjections = openKey !== '' && openKey === prevOpenFindings
+            const answerUnchanged = prevReviewedAnswer !== '' && answerKey === prevReviewedAnswer
+
+            if (!repeatedObjections && !answerUnchanged && reviewRounds < MAX_REVIEW_ROUNDS) {
+              prevOpenFindings = openKey
+              prevReviewedAnswer = answerKey
               reviewRounds++
               trace(`step ${step}: review ${review.verdict} — round ${reviewRounds}`)
               emit({
@@ -486,22 +520,28 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
               continue
             }
 
-            // Out of rounds and the reviewer still says no. Hand the findings to
-            // the user rather than reporting a completion the reviewer denies:
-            // "unfinished, and here is exactly what is missing" is a result, a
-            // false success is not.
-            const open = review.findings.filter((finding) => finding.status !== 'met')
-            const detail = open.length > 0
-              ? open.map((finding) => `${finding.requirement}（${finding.evidence || '没有证据'}）`).join('；')
-              : review.summary || '自审没有给出具体原因'
-            const failure: LlmFailure = {
-              message:
-                `自审连续 ${MAX_REVIEW_ROUNDS} 轮没有通过，已停止——任务很可能没有做完。` +
-                `还差这些：${detail}。换一个更强的模型，或者把要求拆得更具体之后重试。`,
-              code: 'REVIEW_INCOMPLETE',
+            if (repeatedObjections && !answerUnchanged) {
+              trace(`step ${step}: reviewer repeats identical objections to a changed answer — accepting`)
+              // Fall through to the normal end below: the answer the user can
+              // see is the result; an error banner contradicting it helps nobody.
+            } else {
+              // Out of rounds, or the model provably cannot budge. Hand the
+              // findings to the user rather than reporting a completion the
+              // reviewer denies: "unfinished, and here is exactly what is
+              // missing" is a result, a false success is not.
+              const open = review.findings.filter((finding) => finding.status !== 'met')
+              const detail = open.length > 0
+                ? open.map((finding) => `${finding.requirement}（${finding.evidence || '没有证据'}）`).join('；')
+                : review.summary || '自审没有给出具体原因'
+              const failure: LlmFailure = {
+                message:
+                  `自审没有通过${reviewRounds > 0 ? `（已纠正 ${reviewRounds} 轮）` : ''}，已停止——任务很可能没有做完。` +
+                  `还差这些：${detail}。换一个更强的模型，或者把要求拆得更具体之后重试。`,
+                code: 'REVIEW_INCOMPLETE',
+              }
+              emit({ type: 'step/end', data: { turn, step, reason: { kind: 'error', failure } } })
+              return finishTurn({ kind: 'error', failure })
             }
-            emit({ type: 'step/end', data: { turn, step, reason: { kind: 'error', failure } } })
-            return finishTurn({ kind: 'error', failure })
           }
         } else {
           // The gate was consulted and stood down: with no tool run there is no

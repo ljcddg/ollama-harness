@@ -2221,19 +2221,52 @@ await test('a reviewer that never agrees hands the findings over instead of faki
 
   assert.equal(end.data.reason.kind, 'error', 'the turn is reported as unfinished')
   assert.equal(end.data.reason.failure.code, 'REVIEW_INCOMPLETE')
-  assert.equal(
-    adapter.reviewCalls,
-    4,
-    'MAX_REVIEW_ROUNDS is 3 corrections plus the verdict that finally stops it',
-  )
-  assert.equal(corrections('review-gate').length, 3, 'three chances, then it escalates')
+  // The answer after the correction is byte-identical to the one already
+  // reviewed: the correction provably changed nothing, so the loop escalates
+  // at the SECOND verdict instead of burning all remaining rounds to reach
+  // the same place.
+  assert.equal(adapter.reviewCalls, 2, 'an unchanged answer escalates immediately')
+  assert.equal(corrections('review-gate').length, 1, 'one chance, then it escalates')
   assert.deepEqual(
     verdicts,
-    ['mismatch', 'mismatch', 'mismatch', 'mismatch'],
+    ['mismatch', 'mismatch'],
     'every refusal is on the record, including the one that stopped it',
   )
   // The message has to carry what is missing, not just the fact of failure.
   assert.match(end.data.reason.failure.message, /跑通测试/)
+})
+
+await test('identical objections to a CHANGED answer converge instead of looping', async () => {
+  // Live trace (2026-09-24): the model searched the project, concluded the
+  // MySQL credentials live in Nacos, and said so in detail — and the reviewer
+  // rejected three times with the same finding whose own evidence read
+  // "(已完成)". The reviewer is the same model as the worker; once it repeats
+  // an objection to a re-written answer, re-asking adds nothing.
+  const driftReview = reviewSays('partial', [
+    {
+      requirement: 'Search YAML files for the MySQL password',
+      status: 'partial',
+      evidence: 'the direct search concluded the credentials are in Nacos (已完成)',
+    },
+  ])
+  const { adapter, end, corrections, verdicts } = await runGateTurn({
+    steps: [
+      toolStep('call-1'),
+      textStep('我在 yaml 里没有找到，密码应该是 Nacos 配置的。'),
+      textStep('补充细节：搜过 application.yml、bootstrap.yml 和 config 目录，都没有，确认来自 Nacos。'),
+    ],
+    reviews: [driftReview, driftReview],
+    userText: '项目里的 MySQL 密码是多少',
+  })
+
+  assert.equal(adapter.reviewCalls, 2, 'reviewed twice, then converged')
+  assert.equal(corrections('review-gate').length, 1, 'one correction, not three')
+  assert.deepEqual(verdicts, ['partial', 'partial'])
+  assert.equal(
+    end.data.reason.kind,
+    'stop',
+    'a repeated objection to a changed answer accepts the answer the user can see',
+  )
 })
 
 await test('a conversational answer is not routed through the gate', async () => {
