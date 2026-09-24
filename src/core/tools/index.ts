@@ -11,6 +11,7 @@ import { bashTool } from './bash.js'
 import { editTool, globTool, grepTool, readTool, writeTool } from './files.js'
 import { listTool } from './list.js'
 import { createSearchTool, type SearchToolDeps } from './search.js'
+import { createWebTool } from './web.js'
 import { ToolRegistry } from './types.js'
 
 /** Tools that mutate state and are therefore approval candidates. */
@@ -38,6 +39,9 @@ export function createDefaultRegistry(deps?: RegistryDeps): ToolRegistry {
   // Meaning-based lookup after grep: it covers the gap grep cannot (a Chinese
   // question with English identifiers), so it reads as the supplement it is.
   if (deps?.search) registry.register(createSearchTool(deps.search))
+  // Always registered: unlike search it needs no model, and an offline machine
+  // gets a clean "could not reach the internet" rather than a missing tool.
+  registry.register(createWebTool())
   registry.register(editTool)
   registry.register(writeTool)
   registry.register(bashTool)
