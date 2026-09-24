@@ -33,8 +33,9 @@
     "check:settings": "node scripts/probe-settings-scroll.mjs --prod",
     "check:settings:dev": "node scripts/probe-settings-scroll.mjs --dev",
     "check:fold": "node scripts/probe-code-fold.mjs",
+    "check:changes": "node scripts/probe-changes.mjs",
     "check:cwd": "node scripts/probe-cwd.mjs",
-    "check:all": "npm run typecheck && npm run check && npm run check:cwd && npm run check:load && npm run check:deps && npm run build:renderer && npm run check:smoke && npm run check:render && npm run check:composer && npm run check:sidebar && npm run check:settings && npm run check:fold",
+    "check:all": "npm run typecheck && npm run check && npm run check:cwd && npm run check:load && npm run check:deps && npm run build:renderer && npm run check:smoke && npm run check:render && npm run check:composer && npm run check:sidebar && npm run check:settings && npm run check:fold && npm run check:changes",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.preload.json --noEmit"
   },
   "dependencies": {

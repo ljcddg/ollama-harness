@@ -76,6 +76,8 @@ function Message({ node, actions }: { node: Node; actions: MessageActions }) {
       return <ToolCard node={node} />
     case 'compact':
       return <CompactMarker actions={actions} />
+    case 'changes':
+      return <ChangesCard node={node} />
     case 'error':
       return (
         <article className="msg msg-error">
@@ -87,6 +89,61 @@ function Message({ node, actions }: { node: Node; actions: MessageActions }) {
     default:
       return null
   }
+}
+
+/** How many changed paths are listed before the rest are counted instead. */
+const CHANGES_SHOWN = 6
+
+const CHANGE_MARK: Record<string, string> = { added: '+', modified: '~', removed: '−' }
+
+/**
+ * What the harness measured changing on disk during the turn that just ended.
+ *
+ * It belongs in the transcript because the alternative is asking: the model's own
+ * account of what its commands did has been wrong in ways only this list settles.
+ * "清空当前工作目录文件" produced `del /q *.*`, a reply of "已清空当前目录下的文件。",
+ * and 25 untouched files — the user had to follow up with "可是没清空啊" to find out.
+ */
+function ChangesCard({ node }: { node: Extract<Node, { kind: 'changes' }> }) {
+  const { added, removed, modified } = node.counts
+  const total = added + removed + modified
+  const summary = [
+    added > 0 ? `${added} 新增` : '',
+    modified > 0 ? `${modified} 修改` : '',
+    removed > 0 ? `${removed} 删除` : '',
+  ]
+    .filter((part) => part.length > 0)
+    .join(' · ')
+  const shown = node.paths.slice(0, CHANGES_SHOWN)
+  const rest = node.paths.length - shown.length
+
+  return (
+    <article className={`changes${total === 0 ? ' changes-none' : ''}`}>
+      <div className="changes-head">
+        <span className="changes-title">本轮改动</span>
+        <span className="changes-summary">{total === 0 ? '没有文件变动' : summary}</span>
+      </div>
+      {shown.length > 0 && (
+        <ul className="changes-list">
+          {shown.map((entry) => {
+            // The main process formats these as `kind: path`, so the path may
+            // contain a colon of its own on Windows — split once, from the left.
+            const cut = entry.indexOf(': ')
+            const kind = cut === -1 ? '' : entry.slice(0, cut)
+            const path = cut === -1 ? entry : entry.slice(cut + 2)
+            return (
+              <li key={entry} className={`changes-row changes-${kind}`}>
+                <span className="changes-mark">{CHANGE_MARK[kind] ?? '·'}</span>
+                <span className="changes-path">{path}</span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      {rest > 0 && <div className="changes-more">还有 {rest} 个文件</div>}
+      {node.truncated && <div className="changes-more">清单被扫描上限截断，实际改动可能更多</div>}
+    </article>
+  )
 }
 
 /** Where the log was rolled up, so the user can see why old context got short. */

@@ -47,6 +47,22 @@ export type Node =
   | { kind: 'error'; id: string; message: string; code: string }
   /** Marker showing where the transcript was rolled into a summary. */
   | { kind: 'compact'; id: string; time: number }
+  /**
+   * What the harness measured changing on disk for one turn.
+   *
+   * Measured, not declared — see `core/workspace.ts`. It is shown because the
+   * model's own account of what its commands did has been wrong: a turn that
+   * deleted two files out of twenty-seven reported the directory as cleared, and
+   * nothing in the transcript could contradict it.
+   */
+  | {
+      kind: 'changes'
+      id: string
+      time: number
+      counts: { added: number; removed: number; modified: number }
+      paths: string[]
+      truncated: boolean
+    }
 
 interface State {
   nodes: Node[]
@@ -156,6 +172,22 @@ function fold(state: State, event: SessionEvent): State {
         ...state,
         compactedTo: event.data.upTo,
         nodes: [...state.nodes, { kind: 'compact', id: `c-${event.seq}`, time: event.time }],
+      }
+
+    case 'workspace/changes':
+      return {
+        ...state,
+        nodes: [
+          ...state.nodes,
+          {
+            kind: 'changes',
+            id: `w-${event.seq}`,
+            time: event.time,
+            counts: event.data.counts,
+            paths: event.data.paths,
+            truncated: event.data.truncated,
+          },
+        ],
       }
 
     case 'step/start': {

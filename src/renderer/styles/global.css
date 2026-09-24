@@ -1126,6 +1126,77 @@ kbd {
   font-weight: 600;
 }
 
+/* ---------- turn changes (workspace/changes) ---------- */
+
+.changes {
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+
+.changes-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+
+.changes-title {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.changes-summary {
+  color: var(--text-tertiary);
+}
+
+.changes-list {
+  margin: 0;
+  padding: 6px 10px;
+  list-style: none;
+  font-family: var(--font-mono, monospace);
+}
+
+.changes-row {
+  display: flex;
+  gap: 6px;
+  padding: 1px 0;
+  line-height: 1.6;
+}
+
+/* The mark carries the state, so a scan down the paths column reads as one
+   column of signs rather than three columns of colour. */
+.changes-mark {
+  flex: none;
+  width: 10px;
+}
+
+.changes-added .changes-mark {
+  color: var(--ok);
+}
+
+.changes-removed .changes-mark {
+  color: var(--danger);
+}
+
+.changes-modified .changes-mark {
+  color: var(--warn);
+}
+
+.changes-path {
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.changes-more {
+  padding: 0 10px 6px;
+  color: var(--text-tertiary);
+}
+
 /* ---------- per-message actions ---------- */
 
 .msg-tools {
