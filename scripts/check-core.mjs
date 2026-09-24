@@ -1144,6 +1144,127 @@ await test('a step over budget trims tool results before the request goes out', 
   )
 })
 
+console.log('\nweb search backends')
+
+const DDG_FIXTURE = `<div class="result">
+<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage">Example &amp; Page</a>
+<a class="result__snippet">A snippet about &lt;things&gt;.</a>
+</div>`
+
+const BING_FIXTURE = `<ol id="b_results">
+<li class="b_algo" data-id iid=SERP.1>
+  <div class="b_tpcn"><a class="tilk" href="https://spring.io/"><div class="tptt">spring.io</div></a></div>
+  <h2 class=""><a target="_blank" href="https://spring.io/projects/spring-boot"><strong>Spring</strong> Boot</a></h2>
+  <div class="b_caption"><p class="b_lineclamp2" data-rslinkclamp-iid="">Spring&ensp;Boot makes it easy to create stand-alone applications. 阅读更多</p></div>
+</li>
+<li class="b_algo" data-id iid=SERP.2>
+  <h2><a href="https://example.com/docs">Docs</a></h2>
+  <div class="b_caption"><ul><li>nested item</li></ul><p class="b_lineclamp4">A snippet with a nested list above it.</p></div>
+</li>
+</ol>`
+
+test('the DuckDuckGo parser unwraps redirect links', async () => {
+  const { parseDdgResults } = await import('../dist/core/tools/web.js')
+  const results = parseDdgResults(DDG_FIXTURE)
+  assert.equal(results.length, 1)
+  assert.equal(results[0].url, 'https://example.com/page')
+  assert.equal(results[0].title, 'Example & Page')
+  assert.equal(results[0].snippet, 'A snippet about <things>.')
+})
+
+test('the Bing parser reads the heading, not the favicon anchor', async () => {
+  const { parseBingResults } = await import('../dist/core/tools/web.js')
+  const results = parseBingResults(BING_FIXTURE)
+  assert.equal(results.length, 2)
+  // The first anchor in a block is the site icon, and its text is a bare hostname.
+  assert.equal(results[0].title, 'Spring Boot')
+  assert.equal(results[0].url, 'https://spring.io/projects/spring-boot')
+  // Bing's own "阅读更多" link text sits inside the clamped paragraph.
+  assert.equal(results[0].snippet, 'Spring Boot makes it easy to create stand-alone applications.')
+  // A nested <li> must not end the block early.
+  assert.match(results[1].snippet, /nested list/)
+  assert.deepEqual(parseBingResults('<html>nothing here</html>'), [])
+})
+
+const webCtx = () => ({
+  cwd: '.',
+  signal: new AbortController().signal,
+  callId: 'test',
+  requestApproval: async () => true,
+})
+
+await test('a blocked search backend falls through to the next one', async () => {
+  // The regression this locks. One hard-coded backend made an unreachable host
+  // look like a broken feature: `html.duckduckgo.com` times out on this machine
+  // while `cn.bing.com` answers in ~250 ms, and the tool reported only "fetch
+  // failed". Order matters here, and so does having a second entry at all.
+  const { createWebTool, SEARCH_BACKENDS } = await import('../dist/core/tools/web.js')
+  assert.ok(SEARCH_BACKENDS.length >= 2, 'one backend is a single point of failure')
+  assert.equal(SEARCH_BACKENDS[0].name, 'bing', 'the reachable one is tried first')
+
+  const tried = []
+  const tool = createWebTool({
+    fetch: async (url) => {
+      tried.push(String(url))
+      if (String(url).includes('bing')) throw new Error('blocked')
+      return { ok: true, status: 200, headers: { get: () => 'text/html' }, text: async () => DDG_FIXTURE }
+    },
+  })
+  const result = await tool.execute({ query: 'anything' }, webCtx())
+  assert.equal(tried.length, 2, 'both backends must be attempted')
+  assert.equal(tried[0].includes('bing'), true)
+  assert.equal(tried[1].includes('duckduckgo'), true)
+  assert.equal(result.isError, undefined, `got ${JSON.stringify(result.content)}`)
+  assert.match(result.content, /Web results for "anything"/)
+})
+
+await test('search says which layer failed when every backend does', async () => {
+  const { createWebTool } = await import('../dist/core/tools/web.js')
+
+  // Unreachable: the model is told to admit it rather than answer from memory —
+  // that admission is the difference between "I could not check" and a confident
+  // answer built from a training cutoff.
+  const offline = createWebTool({
+    fetch: async () => {
+      throw new Error('ECONNREFUSED')
+    },
+  })
+  const offlineResult = await offline.execute({ query: 'x' }, webCtx())
+  assert.equal(offlineResult.isError, true)
+  assert.match(offlineResult.content, /Nothing was reachable/)
+  assert.match(offlineResult.content, /instead of answering from memory/)
+
+  // Reached but unparseable is a DIFFERENT failure with a different next move,
+  // and reporting both as "search failed" is what left a session reconstructing
+  // the difference from raw bytes.
+  const stale = createWebTool({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'text/html' },
+      text: async () => '<html><body>redesigned</body></html>',
+    }),
+  })
+  const staleResult = await stale.execute({ query: 'x' }, webCtx())
+  assert.equal(staleResult.isError, true)
+  assert.match(staleResult.content, /no results could be read/)
+  assert.ok(!/Nothing was reachable/.test(staleResult.content), 'the two failures must not be conflated')
+})
+
+test('the reviewer is told that an unchecked stack is not a verified one', async () => {
+  const { buildReviewPrompt } = await import('../dist/core/prompt.js')
+  const prompt = buildReviewPrompt('帮我创建一个项目', '1 file(s) changed: 1 added')
+  // The user's own complaint — "它用的技术都太老了" — turned into a rule the
+  // reviewer can apply. A model's knowledge stops at its training cutoff, so a
+  // stack chosen with no lookup is a stack chosen from the past, and nothing in
+  // the transcript would otherwise say so.
+  assert.match(prompt, /training cutoff/)
+  assert.match(prompt, /`web` call/)
+  assert.match(prompt, /"unclear", not "met"/)
+  // The measured diff still rides along in the same prompt.
+  assert.match(prompt, /1 file\(s\) changed: 1 added/)
+})
+
 console.log('\nwhat actually changed on disk (`workspace`)')
 
 const mkStamp = (files) => ({ files: new Map(Object.entries(files)), truncated: false })

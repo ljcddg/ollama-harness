@@ -331,6 +331,13 @@ export function buildReviewPrompt(request: string, workspace?: string): string {
     '  which files it read"), never as the raw request sentence.',
     '- Use "unclear" when the transcript cannot prove or disprove a point. Do',
     '  not mark "missing" for something the request never asked for.',
+    '- When the request is to BUILD something — a project, a stack, a version, a',
+    '  dependency — the currency of that choice is itself a requirement. A model',
+    '  knows only up to its training cutoff, so a stack picked with no lookup at',
+    '  all was picked from the past, and the age of that choice is invisible to',
+    '  the user until much later. Look for a `web` call in the transcript; if',
+    '  there is none, the choice was never checked against current sources — say',
+    '  so and mark it "unclear", not "met".',
   ].join('\n')
 }
 

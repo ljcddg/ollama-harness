@@ -31,9 +31,9 @@ const MAX_RESULTS = 6
 const MAX_PAGE_CHARS = 4_000
 const MAX_RAW_BYTES = 800_000
 const FETCH_TIMEOUT_MS = 15_000
-const SEARCH_URL = 'https://html.duckduckgo.com/html/'
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
+const ACCEPT_LANGUAGE = 'zh-CN,zh;q=0.9,en;q=0.8'
 
 // ---------------------------------------------------------------------------
 // Parsing — pure, exported, fixture-tested
@@ -48,7 +48,7 @@ export function decodeEntities(text: string): string {
     .replace(/&#x27;|&#39;|&apos;/g, "'")
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&nbsp;/g, ' ')
+    .replace(/&nbsp;|&ensp;|&emsp;|&thinsp;/g, ' ')
     .replace(/&amp;/g, '&')
 }
 
@@ -113,6 +113,45 @@ export function parseDdgResults(html: string): WebResult[] {
   return results
 }
 
+/**
+ * Parse a Bing result page.
+ *
+ * One result is one `li.b_algo`: the title anchor lives inside its `h2` and the
+ * snippet in a `p.b_lineclamp*`. The block also carries a site-icon anchor BEFORE
+ * the heading, which is why the title is read from inside the `h2` rather than
+ * from the first anchor in the block — the first one is the favicon and its text
+ * is the bare hostname.
+ *
+ * Splitting on the next block rather than on `</li>` matters: a result's markup
+ * contains nested list items, so a non-greedy `</li>` would cut the snippet off
+ * at the first inner close tag.
+ */
+export function parseBingResults(html: string): WebResult[] {
+  const blocks = [...html.matchAll(/<li class="b_algo"[\s\S]*?(?=<li class="b_algo"|<\/ol>|$)/g)]
+  const results: WebResult[] = []
+
+  for (const block of blocks) {
+    if (results.length >= MAX_RESULTS) break
+    const heading = /<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i.exec(block[0])
+    if (heading === null) continue
+    const url = heading[1]!
+    if (!/^https?:\/\//.test(url)) continue
+    const title = stripTags(heading[2]!)
+    if (title.length === 0) continue
+    const snippet = /<p class="b_lineclamp[^"]*"[^>]*>([\s\S]*?)<\/p>/i.exec(block[0])
+    results.push({
+      title,
+      url,
+      // Bing puts its own "阅读更多" link text inside the clamped paragraph. It is
+      // interface, not content, and a model quoting it back reads as broken.
+      snippet: snippet
+        ? stripTags(snippet[1]!).replace(/\s*(?:阅读更多|Read more)\s*$/i, '').trim().slice(0, 240)
+        : '',
+    })
+  }
+  return results
+}
+
 /** Turn a fetched page into readable text, hard-capped. */
 export function htmlToText(html: string): { title: string; text: string } {
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)
@@ -129,6 +168,35 @@ export function htmlToText(html: string): { title: string; text: string } {
 // Tool
 // ---------------------------------------------------------------------------
 
+/** What a search backend has to provide. */
+export interface SearchBackend {
+  name: string
+  url(query: string): string
+  parse(html: string): WebResult[]
+}
+
+/**
+ * Search backends, in the order they are tried.
+ *
+ * Bing is first because it answers in ~250 ms from this machine while
+ * `html.duckduckgo.com` does not answer at all — the probe that produced this
+ * order timed DuckDuckGo out at 8 s and got a full Bing page in 246 ms. With one
+ * hard-coded backend, a host that is unreachable makes the whole tool look
+ * broken; with a list, it costs one attempt.
+ */
+export const SEARCH_BACKENDS: SearchBackend[] = [
+  {
+    name: 'bing',
+    url: (query) => `https://cn.bing.com/search?q=${encodeURIComponent(query)}`,
+    parse: parseBingResults,
+  },
+  {
+    name: 'duckduckgo',
+    url: (query) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+    parse: parseDdgResults,
+  },
+]
+
 type Args = Record<string, unknown>
 
 function str(args: Args, key: string): string {
@@ -140,44 +208,66 @@ export function createWebTool(deps?: WebToolDeps): Tool {
   const doFetch = deps?.fetch ?? fetch
 
   async function search(query: string, ctx: ToolRunContext): Promise<ToolResult> {
-    let html: string
-    try {
-      const response = await doFetch(`${SEARCH_URL}?q=${encodeURIComponent(query)}`, {
-        headers: { 'user-agent': USER_AGENT, accept: 'text/html' },
-        signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
-      })
-      if (!response.ok) {
-        return {
-          content: `Search failed: the search endpoint returned ${response.status}. Try again, or rephrase.`,
-          isError: true,
+    const failures: Array<{ name: string; reason: string; reachable: boolean }> = []
+
+    for (const backend of SEARCH_BACKENDS) {
+      let html: string
+      try {
+        const response = await doFetch(backend.url(query), {
+          headers: {
+            'user-agent': USER_AGENT,
+            accept: 'text/html',
+            'accept-language': ACCEPT_LANGUAGE,
+          },
+          signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
+        })
+        if (!response.ok) {
+          failures.push({ name: backend.name, reason: `HTTP ${response.status}`, reachable: true })
+          continue
         }
+        html = await response.text()
+      } catch (error) {
+        failures.push({
+          name: backend.name,
+          reason: error instanceof Error ? error.message : String(error),
+          reachable: false,
+        })
+        continue
       }
-      html = await response.text()
-    } catch (error) {
-      return {
-        content:
-          `Could not reach the internet: ${error instanceof Error ? error.message : String(error)}. ` +
-          'Answer from local files and your own knowledge instead, and say that the web lookup failed.',
-        isError: true,
+
+      const results = backend.parse(html)
+      if (results.length === 0) {
+        // Reached, but nothing parsed: the markup moved, or the query found
+        // nothing. Either way the next backend is worth one attempt.
+        failures.push({ name: backend.name, reason: 'reached, nothing parsed', reachable: true })
+        continue
       }
+
+      const lines = [`Web results for "${query}" (top ${results.length}):`]
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]!
+        lines.push(`\n${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ''}`)
+      }
+      lines.push('\nTo read one of these pages, call web with its url.')
+      return { content: lines.join('\n') }
     }
 
-    const results = parseDdgResults(html)
-    if (results.length === 0) {
-      return {
-        content:
-          `No results for "${query}". Either nothing matches, or the search page markup ` +
-          'changed. Try rewording the query; if it keeps failing, say the web search is unavailable.',
-      }
+    // Every backend failed. Name each one and say WHICH LAYER failed: "nothing was
+    // reachable" and "the page came back but its markup did not parse" call for
+    // different next moves, and reporting only "search failed" left a whole
+    // session reconstructing the difference from raw bytes.
+    const anyReachable = failures.some((failure) => failure.reachable)
+    const detail = failures.map((failure) => `${failure.name}: ${failure.reason}`).join('; ')
+    return {
+      content:
+        `Web search failed for "${query}". Backends tried — ${detail}. ` +
+        (anyReachable
+          ? 'The page loaded but no results could be read from it, so the markup may have ' +
+            'changed or the query may be too narrow. Try different words.'
+          : 'Nothing was reachable, so this machine may have no route to those hosts. Say that ' +
+            'the web lookup failed instead of answering from memory.'),
+      isError: true,
     }
-
-    const lines = [`Web results for "${query}" (top ${results.length}):`]
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i]!
-      lines.push(`\n${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ''}`)
-    }
-    lines.push('\nTo read one of these pages, call web with its url.')
-    return { content: lines.join('\n') }
   }
 
   async function fetchPage(url: string, ctx: ToolRunContext): Promise<ToolResult> {
@@ -213,9 +303,13 @@ export function createWebTool(deps?: WebToolDeps): Tool {
     name: 'web',
     description:
       'Search the internet or read a web page. Use `query` to search (returns titles, URLs, ' +
-      'and snippets) or `url` to fetch one page as readable text. Use this when the question ' +
-      'needs current information, library documentation, or facts outside the local codebase ' +
-      'and your training data. For anything in the local project, use grep/search instead.',
+      'and snippets) or `url` to fetch one page as readable text. ' +
+      'Reach for it BEFORE deciding how to build something, whenever the answer changes over ' +
+      'time: which version of a library is current, whether a dependency is still maintained, ' +
+      'what a new project should be built with today. A model’s training data is always ' +
+      'behind these facts, so a stack chosen from memory alone is a stack chosen from the ' +
+      'past — and the age of that choice is invisible to the user until much later. ' +
+      'For anything in the local project, use grep/search instead.',
     parameters: {
       type: 'object',
       properties: {
