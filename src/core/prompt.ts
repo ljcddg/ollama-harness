@@ -138,6 +138,16 @@ export function buildSystemPrompt(ctx: PromptContext): string {
       '- If a call is refused, the USER refused it. Say so plainly and stop; do not',
       '  retry the same action by another route.',
       '',
+      // Trace (2026-09-24): the user asked "项目中的 MySQL 密码怎么写的", and
+      // the model searched C:\Users\...\Documents — the conversation's working
+      // directory — instead of the actual project folder, then concluded the
+      // project had no config. "我的项目" means THEIR code project, not
+      // whatever folder the session happens to sit in.
+      '- "我的项目" / "项目中" means the user\'s code project. If the working',
+      '  directory is not it (e.g. it is Documents or Downloads and the project',
+      '  lives elsewhere), say so and ask which folder they mean — do not search',
+      '  an unrelated directory and conclude the project lacks something.',
+      '',
       'Example — the user asks "当前目录下有什么" or "D:\\some\\folder 里有什么":',
       '  Correct: call glob with {"pattern": "**/*", "path": "<that folder>"}, then',
       '  answer from the result. Or call bash with {"command": "dir /b \\"<folder>\\""}.',
