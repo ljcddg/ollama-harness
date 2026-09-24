@@ -1,0 +1,1887 @@
+/*
+ * Design tokens.
+ *
+ * Light-first, warm neutrals rather than pure grey — a long chat session against
+ * #fff is harder on the eyes than against a slightly warm off-white. Every colour
+ * is a variable so a dark theme is a second :root block, not a rewrite.
+ */
+
+:root {
+  --bg: #faf9f5;
+  --bg-panel: #ffffff;
+  --bg-inset: #f4f2ec;
+  --bg-hover: #efece4;
+  --bg-active: #e8e4d9;
+
+  --text: #2c2c2a;
+  --text-secondary: #5f5e5a;
+  --text-tertiary: #8a8880;
+
+  --border: rgba(44, 44, 42, 0.12);
+  --border-strong: rgba(44, 44, 42, 0.22);
+
+  --accent: #c96442;
+  --accent-hover: #b3553a;
+  --accent-soft: #f7ece7;
+
+  --ok: #3b6d11;
+  --ok-soft: #eaf3de;
+  --warn: #854f0b;
+  --warn-soft: #faeeda;
+  --danger: #a32d2d;
+  --danger-soft: #fcebeb;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --sidebar-width: 264px;
+  --content-max: 760px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+}
+
+/* ---------- layout ---------- */
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  height: 100%;
+  overflow: hidden;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* `min-height: 0` matters twice on a full-height flex column: without it the
+     column refuses to shrink below its content (so a long transcript pushes the
+     composer off screen), and `.scroll` below can never become the scroll port. */
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scroll-wrap {
+  /* Positioning context for the floating "back to latest" affordance. */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.scroll {
+  flex: 1 1 auto;
+  /* The classic flexbox trap: a flex item's automatic minimum size is its
+     content size, so `overflow-y: auto` never engages — the item grows instead
+     of scrolling, and everything below it gets pushed out of the window.
+     `min-height: 0` is what allows it to shrink and scroll. */
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+}
+
+.jump-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(44, 44, 42, 0.14);
+  cursor: pointer;
+}
+
+.jump-latest:hover {
+  background: var(--bg-hover);
+}
+
+/* ---------- sidebar ---------- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-inset);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 10px;
+}
+
+.brand {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.sidebar-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 14px 14px;
+}
+
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.control-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.control-select,
+.control-path {
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.12s ease;
+}
+
+.control-select:hover,
+.control-path:hover {
+  border-color: var(--border-strong);
+}
+
+.control-select:focus-visible,
+.control-path:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.control-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.control-error {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
+}
+
+.control-error-hint {
+  margin-top: 3px;
+  color: var(--text-secondary);
+}
+
+/*
+ * A caution rather than a failure: the selection is legal, it just will not
+ * produce a conversation. Coloured like `--warn` so it reads as "check this"
+ * instead of "something broke".
+ */
+.control-warn {
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: var(--radius-sm);
+}
+
+.control-error code {
+  font-size: 11px;
+}
+
+.control-badges {
+  display: flex;
+  gap: 5px;
+}
+
+.badge {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border-radius: 4px;
+}
+
+.sidebar-section-label {
+  padding: 0 14px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+/*
+ * The session list scrolls, so it must declare `min-height: 0`.
+ *
+ * A flex child's automatic minimum size is its content size, so `flex: 1` plus
+ * `overflow-y: auto` on its own does NOT scroll — the element grows instead and
+ * pushes the footer out of the window. `min-height: 0` is what actually enables
+ * the scroll, and the ancestors need it too.
+ */
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 10px;
+}
+
+/* ── groups (one per working directory) ─────────────────────────────────── */
+
+.group + .group {
+  margin-top: 2px;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.group-head:hover {
+  background: var(--bg-hover);
+}
+
+.group-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 2px 7px 6px;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  background: none;
+  border: none;
+}
+
+/* The sidebar's disclosure arrow. Deliberately NOT `.chevron`: the message list
+   styles its own chevron as a CSS border triangle, and sharing the name let the
+   later rule win and turn this one into a triangle too. */
+.group-chevron {
+  flex: none;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  transition: transform 0.12s ease;
+}
+
+.group-chevron-closed {
+  transform: rotate(-90deg);
+}
+
+.group-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+.group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-active .group-name {
+  color: var(--accent);
+}
+
+.group-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 4px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  outline: none;
+}
+
+/*
+ * Hover-revealed controls, but only for the row under the cursor.
+ *
+ * Kept in the layout rather than `display: none` so the header does not reflow
+ * (and the title does not jump) when the pointer enters.
+ */
+.group-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+  padding-right: 4px;
+}
+
+.group-count {
+  padding: 0 5px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.group-head:hover .group-count {
+  display: none;
+}
+
+.group-add,
+.menu-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 3px vertical padding rather than 0: the icon is 14px tall and has no
+     line-height of its own, so without it the button would collapse from ~21px
+     to 14px and the group header would visibly change height. */
+  padding: 3px 5px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.1s ease, background 0.1s ease;
+}
+
+.group-head:hover .group-add,
+.group-head:hover .menu-trigger,
+.session-row:hover .menu-trigger,
+.session-row.active .menu-trigger,
+.menu-trigger[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.group-add:hover,
+.menu-trigger:hover {
+  background: var(--bg-active);
+}
+
+.group-add:disabled {
+  opacity: 0.35;
+}
+
+.group-sessions {
+  /* Indent the sessions under their directory, with a hairline showing the
+     nesting. */
+  margin-left: 11px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+
+/* ── menus ──────────────────────────────────────────────────────────────── */
+
+.menu-wrap {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+/*
+ * `position: fixed`, not absolute.
+ *
+ * The sidebar scrolls, and `overflow-y: auto` clips descendants on both axes — an
+ * absolutely positioned menu would be cut off near the bottom of a long list. The
+ * coordinates come from the trigger's bounding box at open time, so this element
+ * is deliberately outside the normal flow.
+ */
+.menu-popup {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+}
+
+.menu-item {
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 4px;
+}
+
+.menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.menu-item-danger {
+  color: var(--danger);
+}
+
+.menu-item-danger:hover {
+  background: var(--danger-soft);
+}
+
+.hidden-toggle {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.hidden-toggle:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+/*
+ * Pinned rows keep a warm tint so the pin is not the only signal — a single
+ * emoji at the start of a truncated title is easy to miss.
+ */
+.session-row.pinned {
+  background: var(--accent-soft);
+}
+
+.session-pin {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 3px;
+  font-size: 10px;
+  vertical-align: -1px;
+}
+
+.session-empty {
+  padding: 12px 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.session-row {
+  display: flex;
+  align-items: stretch;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s ease;
+}
+
+.session-row:hover {
+  background: var(--bg-hover);
+}
+
+.session-row.active {
+  background: var(--bg-active);
+}
+
+.session-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 7px 6px 7px 9px;
+  text-align: left;
+  background: none;
+  border: none;
+}
+
+.session-title {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.sidebar-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.dot-idle {
+  background: var(--text-tertiary);
+}
+
+.dot-busy {
+  background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---------- banner ---------- */
+
+.banner {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 20px 0;
+  padding: 10px 14px;
+  background: var(--warn-soft);
+  border: 1px solid rgba(133, 79, 11, 0.2);
+  border-radius: var(--radius-md);
+}
+
+.banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
+}
+
+.banner-text span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* ---------- messages ---------- */
+
+.messages {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 24px 24px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.msg-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg-user {
+  align-items: flex-end;
+}
+
+.msg-user .msg-body {
+  max-width: 85%;
+  padding: 9px 13px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.msg-assistant .msg-body {
+  color: var(--text);
+}
+
+.msg-error {
+  padding: 11px 14px;
+  background: var(--danger-soft);
+  border: 1px solid rgba(163, 45, 45, 0.2);
+  border-radius: var(--radius-md);
+}
+
+.msg-error-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--danger);
+}
+
+.msg-error-code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: blink 1.1s step-end infinite;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.thinking {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.thinking span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  animation: bounce 1.2s ease-in-out infinite;
+}
+
+.thinking span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.thinking span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+/* ---------- reasoning ---------- */
+
+.reasoning {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reasoning-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  padding: 2px 7px 2px 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border: none;
+  border-radius: 5px;
+}
+
+.reasoning-toggle:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.chevron {
+  width: 0;
+  height: 0;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform 0.15s ease;
+}
+
+.chevron.open {
+  transform: rotate(90deg);
+}
+
+.reasoning-body {
+  margin: 0;
+  padding: 9px 11px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg-inset);
+  border-left: 2px solid var(--border-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+/* ---------- tool cards ---------- */
+
+.tool {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.tool-error {
+  border-color: rgba(163, 45, 45, 0.28);
+}
+
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 11px;
+  text-align: left;
+  background: none;
+  border: none;
+}
+
+.tool-head:hover {
+  background: var(--bg-inset);
+}
+
+.tool-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tool-dot-running {
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.tool-dot-ok {
+  background: var(--ok);
+}
+
+.tool-dot-error {
+  background: var(--danger);
+}
+
+.tool-name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.tool-summary {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.tool-detail {
+  border-top: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+
+.tool-detail-label {
+  padding: 7px 11px 3px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.tool-detail-body {
+  margin: 0;
+  padding: 0 11px 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+/* ---------- empty state ---------- */
+
+/* ---------- markdown output ---------- */
+
+/* Blocks carry their own spacing; the wrapper must not add more, or every
+   message ends up with a different amount of leading whitespace. */
+.md > *:first-child {
+  margin-top: 0;
+}
+
+.md > *:last-child {
+  margin-bottom: 0;
+}
+
+.md-para {
+  margin: 0 0 10px;
+}
+
+.md-heading {
+  margin: 16px 0 8px;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.md-list {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.md-list li {
+  margin: 3px 0;
+}
+
+.md-quote {
+  margin: 0 0 10px;
+  padding: 4px 0 4px 12px;
+  color: var(--text-secondary);
+  border-left: 3px solid var(--border-strong);
+}
+
+.md-rule {
+  margin: 14px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.md-inline-code {
+  padding: 1px 5px;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 0.88em;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.md-code-block {
+  margin: 0 0 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+}
+
+.md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px 5px 12px;
+  background: var(--bg-hover);
+  border-bottom: 1px solid var(--border);
+}
+
+.md-code-lang {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.md-code-body {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 1.6;
+  /* Preserve newlines, but wrap rather than force a horizontal scroll for every
+     long line — code shown to a human is usually read, not diffed. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.md-code-pending {
+  padding: 0 12px 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.md-table-wrap {
+  margin: 0 0 12px;
+  overflow-x: auto;
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.md-table th,
+.md-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border: 1px solid var(--border);
+}
+
+.md-table th {
+  background: var(--bg-inset);
+  font-weight: 600;
+}
+
+/* ---------- per-message actions ---------- */
+
+.msg-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  /* Hidden until hover would be tidier, but a hidden copy button is a copy
+     button nobody finds — and it must stay reachable on touch. */
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.msg:hover .msg-tools,
+.msg:focus-within .msg-tools {
+  opacity: 1;
+}
+
+.md-copy {
+  padding: 3px 9px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.md-copy:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.md-copy:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.md-copy.is-copied {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.msg-edited-badge {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-inset);
+  border-radius: 999px;
+}
+
+/* ---------- collapsed attachments ---------- */
+
+.msg-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 260px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.file-chip-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.file-toggle {
+  padding: 3px 9px;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  background: none;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.file-toggle:hover {
+  color: var(--text);
+}
+
+.msg-files-body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  /* Only the expanded payload scrolls. Letting it grow would put a wall of
+     inlined code between the question and the answer below it. */
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* ---------- editing an earlier prompt ---------- */
+
+.msg-editing {
+  gap: 8px;
+}
+
+.edit-input {
+  display: block;
+  width: 100%;
+  min-height: 76px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 6px);
+  resize: vertical;
+  outline: none;
+}
+
+.edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.edit-hint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+/* ---------- compaction marker ---------- */
+
+.compact-marker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.compact-line {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border);
+}
+
+.compact-text {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 90px 24px 40px;
+  text-align: center;
+}
+
+.empty h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.empty p {
+  margin: 0;
+  max-width: 420px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+
+.empty-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.empty-hints span {
+  padding: 6px 12px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+/* ---------- composer ---------- */
+
+.composer {
+  padding: 8px 24px 16px;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  width: 100%;
+  /* The composer is chrome, not content. It must keep its natural height and
+     never be squeezed by the transcript above it — that squeezing is what made
+     the textarea scroll after two lines. */
+  flex: none;
+}
+
+.composer-box {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  transition: border-color 0.12s ease;
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent);
+}
+
+.composer-input {
+  display: block;
+  width: 100%;
+  padding: 12px 14px 4px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  background: none;
+  border: none;
+  resize: none;
+  outline: none;
+  /* Definitely no `max-height` and no scrolling here. The textarea is sized by
+     JS from its content; a CSS cap would clip it at a value the script cannot
+     see and reintroduce the inner scrollbar on a two-line draft. */
+  overflow: hidden;
+  /* One line (14px × 1.6) plus vertical padding — the floor, so a measurement
+     race can never collapse it into a sliver under the button row. */
+  min-height: 37px;
+}
+
+.composer-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px 9px 14px;
+  /* The button row must never be squeezed by the textarea above it — without
+     this a flex child can shrink below its content and overlap. */
+  flex: none;
+}
+
+.composer-hint {
+  padding: 6px 2px 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+kbd {
+  padding: 1px 4px;
+  font-size: 10.5px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* ---------- buttons ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 13px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-send {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-send:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-send kbd {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.16);
+  border-color: transparent;
+}
+
+.btn-stop {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(163, 45, 45, 0.25);
+}
+
+.stop-square {
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.btn-ghost {
+  background: none;
+  border-color: transparent;
+}
+
+.btn-icon {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* An inline SVG sits on the text baseline, which adds a few px of descender
+   leading inside a fixed-height button and pushes the glyph off centre. */
+.btn-icon svg,
+.group-add svg,
+.menu-trigger svg,
+.group-icon svg,
+.group-chevron svg,
+.session-pin svg {
+  display: block;
+}
+
+.btn-tiny {
+  padding: 1px 5px;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+  border: none;
+}
+
+.btn-small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* ---------- status ---------- */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.status-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- modal ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(44, 44, 42, 0.35);
+  backdrop-filter: blur(2px);
+  z-index: 50;
+}
+
+.modal {
+  width: 100%;
+  max-width: 520px;
+  padding: 20px;
+  background: var(--bg-panel);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 40px rgba(44, 44, 42, 0.18);
+}
+
+.modal-eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--warn);
+}
+
+.modal-title {
+  margin: 4px 0 8px;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.modal-title code {
+  font-size: 15px;
+  color: var(--accent);
+}
+
+.modal-preview {
+  margin: 0 0 14px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.modal-detail {
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.modal-detail-label {
+  padding: 7px 11px 3px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.modal-detail-body {
+  margin: 0;
+  padding: 0 11px 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* ---------- attachments ---------- */
+
+.attach-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 2px;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 3px 4px 3px 9px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.attach-chip-error {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.attach-size {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+
+.attach-remove {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.attach-remove:hover {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.composer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ---------- self review ---------- */
+
+.review {
+  margin: 4px 0 18px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+
+.review-match {
+  border-left-color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.review-partial {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.review-mismatch {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.review-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.review-title {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.review-summary {
+  font-size: 13.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.review-findings {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.review-finding {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  gap: 4px 10px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.finding-status {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.finding-met .finding-status {
+  color: var(--ok);
+}
+
+.finding-missing .finding-status {
+  color: var(--danger);
+}
+
+.finding-partial .finding-status {
+  color: var(--warn);
+}
+
+.finding-requirement {
+  color: var(--text);
+}
+
+.finding-evidence {
+  grid-column: 2;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.review-running {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 18px;
+  padding: 10px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+/* ---------- settings ---------- */
+
+.modal-wide {
+  max-width: 620px;
+}
+
+.settings-scroll {
+  max-height: min(62vh, 560px);
+  margin: 6px -4px 0;
+  padding: 0 4px;
+  overflow-y: auto;
+}
+
+.settings-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-label {
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-hint {
+  margin: 0 0 7px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-tertiary);
+}
+
+.settings-field .settings-hint {
+  display: block;
+  margin: 4px 0 0;
+}
+
+.settings-input,
+.settings-textarea {
+  width: 100%;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.settings-input:focus,
+.settings-textarea:focus {
+  border-color: var(--accent);
+  background: var(--bg-panel);
+}
+
+.settings-textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.settings-field-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tone-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.tone-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  text-align: left;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.tone-option:hover {
+  border-color: var(--border-strong);
+}
+
+.tone-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tone-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tone-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.approval-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.approval-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.approval-option input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.approval-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.approval-name {
+  font-size: 13px;
+}
+
+.approval-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.approval-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.session-title-empty {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* ---------- scrollbars ---------- */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(44, 44, 42, 0.16);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(44, 44, 42, 0.28);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "name": "ollama-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first agent harness built around Ollama models",
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n VITE,ELECTRON -c cyan,magenta \"npm:dev:renderer\" \"npm:dev:main\"",
+    "dev:renderer": "vite",
+    "dev:main": "wait-on tcp:5173 && npm run build:main && electron .",
+    "dev:main:sw": "wait-on tcp:5173 && npm run build:main && electron . --disable-gpu --disable-software-rasterizer",
+    "dev:main:debug": "wait-on tcp:5173 && npm run build:main && electron . --remote-debugging-port=9222",
+    "dev:main:watch": "tsc -p tsconfig.main.json --watch",
+    "clean": "node scripts/clean.mjs all",
+    "clean:main": "node scripts/clean.mjs main",
+    "build": "npm run build:renderer && npm run build:main",
+    "build:renderer": "vite build",
+    "build:main": "npm run clean:main && tsc -p tsconfig.main.json && tsc -p tsconfig.preload.json && node scripts/finalize-preload.mjs",
+    "start": "npm run build && electron .",
+    "start:prod": "npm run build && electron . --prod",
+    "check": "npm run build:main && node scripts/check-core.mjs",
+    "check:deps": "node scripts/check-deps.mjs",
+    "check:load": "node scripts/check-load.mjs",
+    "check:smoke": "node scripts/run-smoke.mjs",
+    "check:live": "node scripts/check-live.mjs",
+    "check:render": "node scripts/probe-render.mjs --prod",
+    "check:render:dev": "node scripts/probe-render.mjs --dev",
+    "check:composer": "node scripts/probe-composer.mjs --prod",
+    "check:composer:dev": "node scripts/probe-composer.mjs --dev",
+    "check:sidebar": "node scripts/probe-sidebar.mjs --prod",
+    "check:sidebar:dev": "node scripts/probe-sidebar.mjs --dev",
+    "check:cwd": "node scripts/probe-cwd.mjs",
+    "check:all": "npm run typecheck && npm run check && npm run check:cwd && npm run check:load && npm run check:deps && npm run build:renderer && npm run check:smoke && npm run check:render && npm run check:composer && npm run check:sidebar",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.preload.json --noEmit"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "wait-on": "^8.0.1"
+  }
+}

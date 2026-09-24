@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The CSP is injected by the `ollama-harness-csp` plugin in vite.config.ts,
+      which picks a permissive policy for `vite dev` and a strict one for the
+      production build. It cannot be written here directly: Vite injects its HMR
+      client as an INLINE script, and an inline-hostile policy means React never
+      mounts and the window renders blank.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="__CSP__" />
+    <title>Ollama Harness</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/main.tsx"></script>
+  </body>
+</html>

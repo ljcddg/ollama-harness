@@ -1,0 +1,14 @@
+{
+  "//": "Preload must be CommonJS: Electron loads it with require(), and require() of an ES module throws ERR_REQUIRE_ESM, silently killing the whole capability bridge and leaving the window painted but empty. Only preload.ts is compiled here — it imports nothing at runtime (the IPC channel names are inlined), so the output is a single self-contained file. scripts/finalize-preload.mjs renames it to .cjs and asserts that self-containment still holds.",
+  "extends": "./tsconfig.main.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist/preload",
+    "rootDir": "src",
+    "sourceMap": true,
+    "declaration": false
+  },
+  "include": ["src/main/preload.ts"],
+  "exclude": []
+}

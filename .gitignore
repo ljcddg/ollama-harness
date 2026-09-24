@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.log
+*.log.del
+.DS_Store
+Thumbs.db
+.vite/
+*.tsbuildinfo
+
+# Throwaway backups and one-off patch scripts. Git is the backup now, so these
+# must not become history.
+.trash/
+
+# Agent state: session memory and whatever else the harness writes for itself.
+# Not source, and it churns every session, so it would only add noise to the
+# diffs this repository exists to make readable.
+.workbuddy/
+
+# Left behind by a failed delete in the CDP probes.
+.empty_tmp/

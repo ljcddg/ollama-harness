@@ -1,0 +1,7 @@
+# Keep the working copy LF, not just the index.
+#
+# `core.autocrlf=true` is the Windows default, and under it a checkout rewrites
+# every one of these files as CRLF — so the tree the tests run against would
+# drift from the tree that was committed, and every diff would look like a
+# whole-file rewrite. The repository is LF to begin with; this keeps it that way.
+* text=auto eol=lf
