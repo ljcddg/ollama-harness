@@ -35,6 +35,7 @@ import {
   buildProjectMap,
   formatProjectMap,
 } from '../dist/core/tools/repo-map.js'
+import { chunkFile, cosineSimilarity, createSearchTool } from '../dist/core/tools/search.js'
 import { asMessageId, asToolCallId } from '../dist/shared/message.js'
 import { IPC, DEFAULT_PERSONA, DEFAULT_CONFIG } from '../dist/shared/ipc.js'
 import { buildSystemPrompt, buildReviewPrompt } from '../dist/core/prompt.js'
@@ -1548,6 +1549,82 @@ test('buildProjectMap states facts a list of directory names cannot', async () =
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+console.log('\nsemantic search (embedding tool)')
+
+test('chunkFile splits by line ranges and skips blank tails', () => {
+  const content = Array.from({ length: 90 }, (_, i) => `line ${i + 1}`).join('\n')
+  const chunks = chunkFile('a.ts', content)
+  assert.equal(chunks.length, 2)
+  assert.equal(chunks[0].startLine, 1)
+  assert.equal(chunks[0].endLine, 60)
+  assert.equal(chunks[1].startLine, 61)
+  assert.equal(chunks[1].endLine, 90)
+  assert.equal(chunkFile('b.ts', '\n\n\n').length, 0, 'blank content has nothing to index')
+})
+
+test('cosineSimilarity ranks direction, not magnitude', () => {
+  assert.equal(cosineSimilarity([1, 0], [1, 0]), 1)
+  assert.equal(cosineSimilarity([2, 0], [1, 0]), 1)
+  assert.equal(cosineSimilarity([1, 0], [0, 1]), 0)
+  assert.equal(cosineSimilarity([0, 0], [1, 1]), 0, 'a zero vector matches nothing')
+})
+
+test('search matches meaning, not words: a Chinese query finds English code', async () => {
+  // The gap this tool exists for: 问 "做菜流程是怎么实现的", grep 无论换什么
+  // 关键词都接不上 RecipeService —— 没有共享 token。The stub embedder stands
+  // in for bge-m3: recipe-ish texts one way, everything else the other.
+  const root = await mkdtemp(joinPath(os.tmpdir(), 'harness-search-'))
+  try {
+    await writeFile(
+      joinPath(root, 'RecipeService.java'),
+      'public class RecipeService {\n  public Flow generateRecipeFlow(String ingredients) {\n    // validates ingredients, then composes the cooking steps\n  }\n}\n',
+    )
+    await writeFile(
+      joinPath(root, 'travel.md'),
+      'Kyoto in autumn: the temples, the maples, where to stay and what to book early.\n',
+    )
+
+    const tool = createSearchTool({
+      listModels: async () => [
+        { id: 'bge-m3:latest', label: 'bge-m3', provider: 'ollama', chat: false, embedding: true },
+      ],
+      embed: async (_model, input) => input.map((t) => (/recipe|做菜/i.test(t) ? [1, 0] : [0, 1])),
+    })
+
+    const r = await tool.execute({ query: '做菜流程是怎么实现的', path: root }, toolContext(root))
+    assert.ok(!r.isError, `search errored: ${r.content}`)
+    assert.match(r.content, /bge-m3/)
+    assert.match(r.content, /RecipeService\.java:1-/)
+    assert.doesNotMatch(r.content, /travel\.md/, 'an unrelated chunk must not outrank the match')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('search says what to do when no embedding model exists', async () => {
+  const tool = createSearchTool({
+    listModels: async () => [
+      { id: 'gemma4:latest', label: 'gemma4', provider: 'ollama', chat: true },
+    ],
+    embed: async () => {
+      throw new Error('must not be called when there is no embedding model')
+    },
+  })
+  const r = await tool.execute({ query: 'x' }, toolContext(os.tmpdir()))
+  assert.ok(r.isError)
+  assert.match(r.content, /ollama pull bge-m3/, 'the error names the fix, not just the failure')
+})
+
+test('the registry only carries search when the provider is wired', () => {
+  // Without deps the tool is absent: a dead entry still costs every step its
+  // tokens in the prompt, and a small model WILL call it.
+  assert.ok(!createDefaultRegistry().has('search'))
+  const withSearch = createDefaultRegistry({
+    search: { listModels: async () => [], embed: async () => [] },
+  })
+  assert.ok(withSearch.has('search'))
 })
 
 test('glob reports the real total when it has to truncate', async () => {

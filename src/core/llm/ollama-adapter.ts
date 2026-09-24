@@ -67,6 +67,12 @@ interface OllamaTagsResponse {
   }>
 }
 
+/** Shape of `/api/embed` output. */
+interface OllamaEmbedResponse {
+  embeddings?: number[][]
+  error?: string
+}
+
 /**
  * Model families/families that accept images. Ollama exposes this through
  * `details.families` containing a projector entry like `clip` or `mllama`.
@@ -116,7 +122,7 @@ export function modelFlags(input: {
   name: string
   families?: readonly string[] | null
   capabilities?: readonly string[] | null
-}): Pick<ModelInfo, 'chat' | 'vision' | 'tools' | 'thinking'> {
+}): Pick<ModelInfo, 'chat' | 'vision' | 'tools' | 'thinking' | 'embedding'> {
   const nameKey = input.name.toLowerCase()
   const haystack = (input.families ?? []).join(' ').toLowerCase()
   const caps = input.capabilities
@@ -127,6 +133,7 @@ export function modelFlags(input: {
       vision: caps.includes('vision'),
       tools: caps.includes('tools'),
       thinking: caps.includes('thinking'),
+      embedding: caps.includes('embedding'),
     }
   }
 
@@ -136,6 +143,7 @@ export function modelFlags(input: {
     vision: VISION_FAMILY_HINTS.some((h) => haystack.includes(h) || nameKey.includes(h)),
     tools: TOOL_CAPABLE_HINTS.some((h) => nameKey.includes(h)),
     thinking: undefined,
+    embedding: looksEmbedding ? true : undefined,
   }
 }
 
@@ -239,6 +247,53 @@ export class OllamaAdapter extends LlmAdapter {
         ...modelFlags({ name, families, capabilities: capabilities[i] }),
       } satisfies ModelInfo
     })
+  }
+
+  /**
+   * Batch text embeddings via `/api/embed`.
+   *
+   * The request/response are small JSON, not NDJSON, so there is nothing to
+   * stream: one POST, one array back, aligned with the input order. Used by
+   * the semantic search tool; chat never touches this.
+   */
+  override async embed(
+    model: string,
+    input: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<number[][]> {
+    let response: Response
+    try {
+      response = await fetch(`${this.baseUrl}/api/embed`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, input: [...input] }),
+        ...(signal ? { signal } : {}),
+      })
+    } catch (cause) {
+      if (signal?.aborted) throw new LlmError('Request aborted', 'ABORTED')
+      throw new LlmError(
+        `Cannot reach Ollama at ${this.baseUrl}. Is it running?`,
+        'CONNECTION_REFUSED',
+        { cause },
+      )
+    }
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new LlmError(
+        `Ollama returned ${response.status} for /api/embed${detail ? `: ${detail.slice(0, 300)}` : ''}`,
+        response.status === 404 ? 'MODEL_NOT_FOUND' : 'PROVIDER_ERROR',
+        { status: response.status },
+      )
+    }
+    const body = (await response.json()) as OllamaEmbedResponse
+    if (body.error) throw new LlmError(body.error, 'PROVIDER_ERROR')
+    if (!Array.isArray(body.embeddings) || body.embeddings.length !== input.length) {
+      throw new LlmError(
+        'Ollama /api/embed returned a mismatched number of embeddings',
+        'EMPTY_RESPONSE',
+      )
+    }
+    return body.embeddings
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {

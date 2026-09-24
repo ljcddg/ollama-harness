@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import type { LlmAdapter } from '../core/llm/adapter.js'
+import { LlmError, type LlmAdapter } from '../core/llm/adapter.js'
 import { OllamaAdapter } from '../core/llm/ollama-adapter.js'
 import { runTurn, maxSeq, type AgentPhase } from '../core/loop.js'
 import { SessionStore } from '../core/session-store.js'
@@ -51,7 +51,23 @@ export class AgentService {
   private readonly pendingApprovals = new Map<ToolCallId, (approved: boolean) => void>()
 
   constructor(private readonly deps: AgentServiceDeps) {
-    this.tools = createDefaultRegistry()
+    // The closures read `this.adapter` at CALL time, not construction time, so
+    // a reconfigure() that swaps the adapter is picked up without rebuilding
+    // the registry (and the tool list the running loop already promised).
+    this.tools = createDefaultRegistry({
+      search: {
+        listModels: (signal) => this.adapter.listModels(signal),
+        embed: (model, input, signal) => {
+          const embed = this.adapter.embed
+          if (!embed) {
+            return Promise.reject(
+              new LlmError('The current provider does not offer embeddings', 'PROVIDER_ERROR'),
+            )
+          }
+          return embed.call(this.adapter, model, input, signal)
+        },
+      },
+    })
     this.adapter = this.buildAdapter({ ollamaBaseUrl: 'http://127.0.0.1:11434' } as AppConfig)
   }
 

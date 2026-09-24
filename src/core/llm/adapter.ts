@@ -47,6 +47,14 @@ export abstract class LlmAdapter {
   abstract listModels(signal?: AbortSignal): Promise<ModelInfo[]>
 
   /**
+   * Batch text embeddings, when the provider offers them. Implemented by
+   * OllamaAdapter via `/api/embed`; the semantic search tool depends on it.
+   * Kept on the adapter — not a free function — so wire-format translation
+   * stays entirely inside the provider boundary.
+   */
+  embed?(model: string, input: readonly string[], signal?: AbortSignal): Promise<number[][]>
+
+  /**
    * Provider-specific tool schema wrapper. Ollama's `/api/chat` accepts plain
    * JSON Schema, but other providers want `{ type: 'function', function: {...} }`.
    * Default: assume the provider wants the OpenAI envelope.

@@ -126,6 +126,12 @@ export interface ModelInfo {
   tools?: boolean
   /** Whether the model emits a separate reasoning stream. */
   thinking?: boolean
+  /**
+   * Whether the model produces embeddings (the other side of `chat`: the
+   * search tool needs one, the chat picker must never offer one). Sourced
+   * from the same capability read as `chat`.
+   */
+  embedding?: boolean
 }
 
 /** One request to a provider. Frozen by the loop before it reaches an adapter. */
