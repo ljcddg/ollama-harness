@@ -99,7 +99,11 @@ try {
   const { createDefaultRegistry } = await load('dist/core/tools/index.js')
   const registry = createDefaultRegistry()
   const names = registry.names()
-  const expected = ['read', 'list', 'glob', 'grep', 'edit', 'write', 'bash']
+  // The default (no-deps) registry. `web` is always registered; `search` is not,
+  // because it needs an embedding model and agent-service wires it in later. This
+  // list must stay in step with createDefaultRegistry — a stale name here is how
+  // the smoke quietly drifts from what the app actually ships.
+  const expected = ['read', 'list', 'glob', 'grep', 'web', 'edit', 'write', 'bash']
   const missing = expected.filter((n) => !names.includes(n))
   missing.length === 0
     ? ok('tool registry', names.join(', '))
