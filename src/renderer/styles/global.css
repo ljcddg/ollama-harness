@@ -892,6 +892,67 @@ kbd {
   overflow-y: auto;
 }
 
+/* ---------- task list (todo_write) ---------- */
+
+/*
+ * The plan the model wrote, shown always-expanded inside its tool card.
+ *
+ * Everything else here is behind a toggle because a tool result is a detail.
+ * This one is not: the whole reason the tool exists is that a step nobody can
+ * see is a step that arrives missing, so hiding it would defeat the feature.
+ */
+
+.todo-list {
+  margin: 0;
+  padding: 3px 11px 10px;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.todo-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.todo-mark {
+  flex-shrink: 0;
+  display: inline-flex;
+  color: var(--text-tertiary);
+}
+
+.todo-completed .todo-mark {
+  color: var(--ok);
+}
+
+.todo-in_progress .todo-mark {
+  color: var(--accent);
+}
+
+.todo-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.todo-completed .todo-text {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+
+.todo-badge {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* ---------- empty state ---------- */
 
 /* ---------- markdown output ---------- */

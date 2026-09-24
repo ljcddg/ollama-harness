@@ -19,6 +19,7 @@ import { useState } from 'react'
 import type { Node } from '../hooks/useHarness.js'
 import type { ReviewResult } from '@shared/ipc.js'
 import { ATTACHMENT_MARKER } from '@shared/ipc.js'
+import { parseTodos, type TodoItem } from '@shared/session.js'
 import { CopyButton, Markdown } from './Markdown.js'
 import { IconFile } from './icons.js'
 
@@ -240,7 +241,12 @@ function ThinkingDots() {
 
 function ToolCard({ node }: { node: Extract<Node, { kind: 'tool' }> }) {
   const [open, setOpen] = useState(false)
-  const summary = summarizeArgs(node.args)
+  // A task list is the one tool result worth showing unasked. Every other card
+  // is a detail the user can open when curious; this one is the plan, and the
+  // reason the tool exists is that a plan nobody can see is a plan that arrives
+  // missing a step. So it renders from the CALL's arguments, always expanded.
+  const todos = todoArgsOf(node)
+  const summary = todos ? todoProgress(todos) : summarizeArgs(node.args)
 
   return (
     <article className={`tool tool-${node.status}`}>
@@ -252,9 +258,11 @@ function ToolCard({ node }: { node: Extract<Node, { kind: 'tool' }> }) {
           <span className="tool-time">{formatDuration(node.durationMs)}</span>
         )}
       </button>
+      {todos && <TodoChecklist todos={todos} />}
       {open && (
         <div className="tool-detail">
-          {node.args !== undefined && Object.keys(node.args as object).length > 0 && (
+          {/* The checklist above already IS the arguments for this tool. */}
+          {todos === null && node.args !== undefined && Object.keys(node.args as object).length > 0 && (
             <>
               <div className="tool-detail-label">参数</div>
               <pre className="tool-detail-body">{JSON.stringify(node.args, null, 2)}</pre>
@@ -269,6 +277,77 @@ function ToolCard({ node }: { node: Extract<Node, { kind: 'tool' }> }) {
         </div>
       )}
     </article>
+  )
+}
+
+/**
+ * The list a `todo_write` call carried, or null for any other call.
+ *
+ * Read through the same `parseTodos` the tool and the fold use, so the card can
+ * never disagree with what the harness recorded. A rejected list renders as a
+ * plain card — the tool's own error text is the more useful thing to show then.
+ */
+function todoArgsOf(node: Extract<Node, { kind: 'tool' }>): TodoItem[] | null {
+  if (node.name !== 'todo_write' || node.status === 'error') return null
+  const args = node.args
+  if (typeof args !== 'object' || args === null) return null
+  const parsed = parseTodos((args as Record<string, unknown>)['todos'])
+  return parsed.ok && parsed.todos.length > 0 ? parsed.todos : null
+}
+
+/** "3/5 步已完成" — the one-line answer to "where is this job up to?". */
+function todoProgress(todos: readonly TodoItem[]): string {
+  const done = todos.filter((todo) => todo.status === 'completed').length
+  return `${done}/${todos.length} 步已完成`
+}
+
+/**
+ * The plan, as the model wrote it.
+ *
+ * Markers are inline SVG, not glyphs: a `✔` or `◻` is a font dependency, and a
+ * font that lacks it paints a solid box instead of a tick.
+ */
+function TodoChecklist({ todos }: { todos: readonly TodoItem[] }) {
+  return (
+    <ul className="todo-list">
+      {todos.map((todo, i) => (
+        <li key={`${i}-${todo.content}`} className={`todo-row todo-${todo.status}`}>
+          <span className="todo-mark" aria-hidden>
+            {todo.status === 'completed' ? (
+              <svg viewBox="0 0 12 12" width="10" height="10">
+                <path
+                  d="M2.6 6.3 4.8 8.5 9.4 3.7"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            ) : todo.status === 'in_progress' ? (
+              <svg viewBox="0 0 12 12" width="10" height="10">
+                <circle cx="6" cy="6" r="2.8" fill="currentColor" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 12 12" width="10" height="10">
+                <rect
+                  x="2.2"
+                  y="2.2"
+                  width="7.6"
+                  height="7.6"
+                  rx="2"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                />
+              </svg>
+            )}
+          </span>
+          <span className="todo-text">{todo.content}</span>
+          {todo.status === 'in_progress' && <span className="todo-badge">进行中</span>}
+        </li>
+      ))}
+    </ul>
   )
 }
 
