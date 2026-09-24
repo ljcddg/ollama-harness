@@ -34,6 +34,7 @@ import { deriveMessages } from '../shared/session.js'
 import type { AppConfig, FileAttachment } from '../shared/ipc.js'
 import { ATTACHMENT_MARKER } from '../shared/ipc.js'
 import { buildSystemPrompt } from './prompt.js'
+import { discoverSkills } from './skills.js'
 import {
   buildCapabilityCorrection,
   buildClaimCorrection,
@@ -231,6 +232,12 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
   let prevOpenFindings = ''
   let prevReviewedAnswer = ''
 
+  // Read once per turn, not once per step: the catalog is a directory walk, and a
+  // turn is short enough that a skill written mid-turn can wait for the next one.
+  // Never throws — a project with no skills, or an unreadable one, simply has none,
+  // and a missing `.SKILL` directory must not be able to fail a conversation.
+  const skills = await discoverSkills(options.cwd)
+
   try {
     for (let step = 1; step <= maxSteps; step++) {
       if (signal.aborted) return finishTurn({ kind: 'aborted' })
@@ -245,6 +252,7 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
         platform: process.platform,
         toolNames: tools.names(),
         persona: config.persona,
+        skills,
       })
 
       const generate: GenerateOptions = {

@@ -11,6 +11,7 @@ import { bashTool } from './bash.js'
 import { editTool, globTool, grepTool, readTool, writeTool } from './files.js'
 import { listTool } from './list.js'
 import { createSearchTool, type SearchToolDeps } from './search.js'
+import { skillTool } from './skill.js'
 import { todoTool } from './todo.js'
 import { createWebTool } from './web.js'
 import { ToolRegistry } from './types.js'
@@ -43,10 +44,12 @@ export function createDefaultRegistry(deps?: RegistryDeps): ToolRegistry {
   // Always registered: unlike search it needs no model, and an offline machine
   // gets a clean "could not reach the internet" rather than a missing tool.
   registry.register(createWebTool())
-  // The plan sits above the writers on purpose. The failure it exists for is a
-  // multi-file job that starts writing before the whole shape is enumerated — a
-  // Spring Boot project with four Java files and no build file — and a small
-  // model picks tools roughly in the order it sees them.
+  // Preparation sits above the writers on purpose. The failure these exist for is
+  // a multi-file job that starts writing before the whole shape is enumerated — a
+  // Spring Boot project with four Java files and no build file — and a small model
+  // picks tools roughly in the order it sees them. A skill goes first because it
+  // may BE that enumeration; the plan follows it.
+  registry.register(skillTool)
   registry.register(todoTool)
   registry.register(editTool)
   registry.register(writeTool)

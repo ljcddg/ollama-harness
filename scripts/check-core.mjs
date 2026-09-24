@@ -2493,6 +2493,112 @@ test('the current plan is dropped when the next turn begins', async () => {
   )
 })
 
+console.log('\nskills (`.SKILL`)')
+
+test('a skill is found by name, and its body excludes the frontmatter', async () => {
+  const { parseFrontmatter } = await import('../dist/core/skills.js')
+  const parsed = parseFrontmatter('---\ndescription: Do the thing\n---\n\nStep one.\nStep two.\n')
+  assert.equal(parsed.fields.description, 'Do the thing')
+  assert.equal(parsed.body, 'Step one.\nStep two.')
+  // Keys are matched case-insensitively, because `Description:` is an easy typo
+  // that would otherwise make a skill silently undocumentable.
+  assert.equal(parseFrontmatter('---\nDescription: shouted\n---\nbody\n').fields.description, 'shouted')
+  // No frontmatter at all, and an unterminated fence, both mean "the whole file is
+  // the body" — a half-parsed block would silently eat the instructions.
+  assert.deepEqual(parseFrontmatter('# Just docs\n').fields, {})
+  assert.equal(parseFrontmatter('# Just docs\n').body, '# Just docs\n')
+  const unterminated = parseFrontmatter('---\ndescription: x\nno closing fence\n')
+  assert.deepEqual(unterminated.fields, {})
+  // Quoted values lose their quotes.
+  assert.equal(parseFrontmatter('---\ndescription: "quoted"\n---\nbody\n').fields.description, 'quoted')
+})
+
+test('the .SKILL root is found upward, and unusable skills are reported not ignored', async () => {
+  const { findSkillRoot, listSkills, loadSkill, discoverSkills, formatSkillCatalog } = await import(
+    '../dist/core/skills.js'
+  )
+  const dir = await mkdtemp(joinPath(os.tmpdir(), 'harness-skills-'))
+  try {
+    const root = joinPath(dir, 'project')
+    const skillDir = joinPath(root, '.SKILL')
+    await mkdir(joinPath(root, 'src', 'deep'), { recursive: true })
+    await mkdir(joinPath(skillDir, 'verify-things'), { recursive: true })
+    await mkdir(joinPath(skillDir, 'not-a-skill-dir'), { recursive: true })
+    await writeFile(
+      joinPath(skillDir, 'verify-things', 'SKILL.md'),
+      '---\ndescription: How to verify things here.\n---\n\nRun the gates.\n',
+      'utf8',
+    )
+    await writeFile(joinPath(skillDir, 'flat-one.md'), '---\ndescription: A flat skill.\n---\n\nBody.\n', 'utf8')
+    // Documentation rather than a skill: no frontmatter, so it must vanish quietly.
+    await writeFile(joinPath(skillDir, 'README.md'), '# Just docs\n', 'utf8')
+    // Declared but unusable: both must be REPORTED, because a skill that silently
+    // never appears is exactly the failure this harness keeps removing.
+    await writeFile(joinPath(skillDir, 'Bad_Name.md'), '---\ndescription: x\n---\nbody\n', 'utf8')
+    await writeFile(joinPath(skillDir, 'no-description.md'), '---\ntitle: x\n---\nbody\n', 'utf8')
+    await writeFile(joinPath(skillDir, 'empty-body.md'), '---\ndescription: x\n---\n\n', 'utf8')
+
+    // Found by walking UP from a nested directory, so a repo root works anywhere.
+    assert.equal(await findSkillRoot(joinPath(root, 'src', 'deep')), skillDir)
+    assert.equal(await findSkillRoot(dir), null, 'a directory tree with no .SKILL has no root')
+
+    const { skills, problems } = await listSkills(skillDir)
+    assert.deepEqual(skills.map((s) => s.name), ['verify-things', 'flat-one'], 'bundles first, then by name')
+    assert.equal(problems.length, 3, `expected 3 problems, got ${JSON.stringify(problems)}`)
+    assert.ok(problems.some((p) => p.reason.includes('kebab-case')))
+    assert.ok(problems.some((p) => p.reason.includes('no `description`')))
+    assert.ok(problems.some((p) => p.reason.includes('no instructions')))
+
+    // Loading returns the body alone, and an unknown name is null, not a throw.
+    const loaded = await loadSkill(joinPath(root, 'src'), 'verify-things')
+    assert.equal(loaded.content, 'Run the gates.')
+    assert.equal(await loadSkill(root, 'nope'), null)
+
+    // The catalog is what rides in every request: names and descriptions only.
+    const catalog = await discoverSkills(joinPath(root, 'src', 'deep'))
+    const text = formatSkillCatalog(catalog)
+    assert.match(text, /- verify-things: How to verify things here\./)
+    assert.match(text, /- flat-one: A flat skill\./)
+    assert.ok(!text.includes('Run the gates.'), 'a body must never ride in the catalog')
+    assert.match(text, /cannot be used/)
+
+    const empty = await discoverSkills(dir)
+    assert.equal(empty.root, null)
+    assert.equal(formatSkillCatalog(empty), null, 'nothing to say means no section at all')
+
+    // The wiring. A catalog that never reaches the prompt is the feature not
+    // shipping, and it would pass every assertion above.
+    const wired = buildSystemPrompt({
+      cwd: root,
+      model: 'probe',
+      platform: process.platform,
+      toolNames: ['skill'],
+      skills: catalog,
+    })
+    assert.match(wired, /# Skills/)
+    assert.match(wired, /- verify-things: How to verify things here\./)
+    const bare = buildSystemPrompt({ cwd: root, model: 'probe', platform: process.platform, toolNames: ['skill'] })
+    assert.ok(!bare.includes('# Skills'), 'a project with no skills gets no empty section')
+
+    // The tool: loads a body, and names what IS available when the name is wrong.
+    const { skillTool } = await import('../dist/core/tools/skill.js')
+    const ctx = {
+      cwd: joinPath(root, 'src'),
+      signal: new AbortController().signal,
+      callId: 's1',
+      requestApproval: async () => true,
+    }
+    const loadedByTool = await skillTool.execute({ name: 'verify-things' }, ctx)
+    assert.match(loadedByTool.content, /<skill_content name="verify-things">/)
+    assert.match(loadedByTool.content, /Run the gates\./)
+    const missing = await skillTool.execute({ name: 'nope' }, ctx)
+    assert.equal(missing.isError, true)
+    assert.match(missing.content, /Available: verify-things, flat-one\./)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 console.log('\npreload / IPC channel agreement')
 
 test('preload CH table matches IPC in shared/ipc.js', () => {

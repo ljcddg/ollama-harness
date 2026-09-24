@@ -10,6 +10,7 @@
 
 import type { PersonaSettings, PersonaTone } from '../shared/ipc.js'
 import { DEFAULT_PERSONA } from '../shared/ipc.js'
+import { formatSkillCatalog, type SkillCatalog } from './skills.js'
 
 export interface PromptContext {
   cwd: string
@@ -20,6 +21,14 @@ export interface PromptContext {
   toolNames: readonly string[]
   /** How to address the user and what tone to take. */
   persona?: PersonaSettings
+  /**
+   * Skills found for this working directory.
+   *
+   * Passed in rather than discovered here because discovery is async and this
+   * function is not — and because the caller has already walked the directory
+   * once for this turn, so a second walk would be pure waste.
+   */
+  skills?: SkillCatalog
 }
 
 /**
@@ -201,6 +210,12 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 
   const personaSection = buildPersonaSection(ctx.persona ?? DEFAULT_PERSONA)
   if (personaSection) sections.push(personaSection)
+
+  // Skills sit between the environment and the working rules on purpose. The list
+  // is short, it reads as "what is available here", and for a small model a
+  // procedure it can load beats one more rule it has to remember.
+  const skillSection = ctx.skills ? formatSkillCatalog(ctx.skills) : null
+  if (skillSection) sections.push(skillSection)
 
   sections.push(
     [
