@@ -28,6 +28,13 @@ import {
   NOISE_DIRS,
 } from '../dist/core/tools/files.js'
 import { fileKind, formatSize, summarizeKinds, findMarkers, listTool } from '../dist/core/tools/list.js'
+import {
+  parsePomXml,
+  parsePackageJson,
+  parseJavaSource,
+  buildProjectMap,
+  formatProjectMap,
+} from '../dist/core/tools/repo-map.js'
 import { asMessageId, asToolCallId } from '../dist/shared/message.js'
 import { IPC, DEFAULT_PERSONA, DEFAULT_CONFIG } from '../dist/shared/ipc.js'
 import { buildSystemPrompt, buildReviewPrompt } from '../dist/core/prompt.js'
@@ -1318,6 +1325,186 @@ test('list describes a directory instead of dumping its names', async () => {
     assert.match(r.content, /Skipped \(dependency\/build noise/)
     assert.match(r.content, /node_modules\//)
     assert.doesNotMatch(r.content, /junk\.js/, 'node_modules contents must not be walked')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+console.log('\nrepo map (L0 deterministic project facts)')
+
+test('parsePomXml reads the project artifactId, not the parent block', () => {
+  // The bug this pins: the FIRST <artifactId> in a pom is the parent's, so a
+  // naive read names every Spring Boot project "spring-boot-starter-parent".
+  const pom = `<?xml version="1.0"?>
+<project>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.2.5</version>
+  </parent>
+  <groupId>com.example</groupId>
+  <artifactId>recipe-backend</artifactId>
+  <version>0.0.1</version>
+  <packaging>jar</packaging>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.baomidou</groupId>
+      <artifactId>mybatis-plus-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>`
+  const facts = parsePomXml(pom)
+  assert.equal(facts.artifactId, 'recipe-backend')
+  assert.equal(facts.parentArtifactId, 'spring-boot-starter-parent')
+  assert.equal(facts.parentVersion, '3.2.5')
+  assert.equal(facts.packaging, 'jar')
+  assert.ok(facts.dependencies.some((d) => d.endsWith('mybatis-plus-boot-starter')))
+  assert.ok(!facts.dependencies.some((d) => d.endsWith('junit')), 'test-scope deps are not key facts')
+})
+
+test('parsePomXml spots a multi-module parent', () => {
+  const facts = parsePomXml(
+    '<project><artifactId>parent</artifactId><packaging>pom</packaging>' +
+      '<modules><module>backend</module><module>frontend-vue</module></modules></project>',
+  )
+  assert.equal(facts.packaging, 'pom')
+  assert.deepEqual(facts.modules, ['backend', 'frontend-vue'])
+})
+
+test('parsePackageJson names frameworks a dependency proves', () => {
+  const facts = parsePackageJson(
+    JSON.stringify({
+      name: 'frontend-vue',
+      dependencies: { vue: '^3.4.0', axios: '^1.6.0', 'element-plus': '^2.5.0', pinia: '^2.1.0' },
+      devDependencies: { vite: '^5.0.0' },
+    }),
+  )
+  assert.equal(facts.name, 'frontend-vue')
+  assert.ok(facts.frameworks.includes('Vue 3'), `frameworks: ${facts.frameworks.join(', ')}`)
+  assert.ok(facts.frameworks.includes('Vite'))
+  assert.ok(facts.notableDeps.includes('axios'))
+  assert.ok(facts.notableDeps.includes('element-plus'))
+
+  const bad = parsePackageJson('{not json')
+  assert.deepEqual(bad.frameworks, [], 'a malformed package.json is not a crash')
+})
+
+test('parseJavaSource collects what a class IS, not every @Override', () => {
+  const src = `package com.example.controller;
+
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/recipe")
+public class RecipeController {
+    @Override
+    public String toString() { return "x"; }
+}
+`
+  const facts = parseJavaSource(src)
+  assert.equal(facts.packageName, 'com.example.controller')
+  assert.equal(facts.className, 'RecipeController')
+  assert.equal(facts.kind, 'class')
+  assert.deepEqual(facts.annotations, ['RestController'])
+
+  const entry = parseJavaSource(
+    '@SpringBootApplication\npublic class RecipeApplication {\n  public static void main(String[] a) {}\n}',
+  )
+  assert.deepEqual(entry.annotations, ['SpringBootApplication'])
+  assert.equal(entry.hasMain, true)
+})
+
+test('buildProjectMap states facts a list of directory names cannot', async () => {
+  // The trace that motivated the whole module: a Maven backend next to a Vue
+  // frontend, described by the model as "frontend-vue/: 似乎是前端部分".
+  const root = await mkdtemp(joinPath(os.tmpdir(), 'harness-repomap-'))
+  try {
+    const javaDir = joinPath(root, 'backend', 'src', 'main', 'java', 'com', 'example')
+    const ctrlDir = joinPath(javaDir, 'controller')
+    await mkdir(ctrlDir, { recursive: true })
+    await writeFile(
+      joinPath(root, 'backend', 'pom.xml'),
+      `<project>
+        <parent>
+          <artifactId>spring-boot-starter-parent</artifactId>
+          <version>3.2.5</version>
+        </parent>
+        <artifactId>recipe-backend</artifactId>
+        <dependencies>
+          <dependency><groupId>com.baomidou</groupId><artifactId>mybatis-plus-boot-starter</artifactId></dependency>
+        </dependencies>
+      </project>`,
+    )
+    await writeFile(
+      joinPath(javaDir, 'RecipeApplication.java'),
+      'package com.example;\n@SpringBootApplication\npublic class RecipeApplication {}\n',
+    )
+    await writeFile(
+      joinPath(ctrlDir, 'RecipeController.java'),
+      'package com.example.controller;\n@RestController\npublic class RecipeController {}\n',
+    )
+    await writeFile(
+      joinPath(ctrlDir, 'UserController.java'),
+      'package com.example.controller;\n@RestController\npublic class UserController {}\n',
+    )
+
+    const vueDir = joinPath(root, 'frontend-vue', 'src')
+    await mkdir(vueDir, { recursive: true })
+    await writeFile(
+      joinPath(root, 'frontend-vue', 'package.json'),
+      JSON.stringify({
+        name: 'frontend-vue',
+        dependencies: { vue: '^3.4.0', axios: '^1.0.0', 'element-plus': '^2.0.0' },
+        devDependencies: { vite: '^5.0.0' },
+      }),
+    )
+    await writeFile(joinPath(vueDir, 'App.vue'), '<template><div/></template>')
+    await writeFile(joinPath(vueDir, 'main.ts'), "import { createApp } from 'vue'")
+    await writeFile(joinPath(root, 'README.md'), '# AI 智能做菜系统\n\n输入食材，AI 推荐菜谱。')
+
+    const map = await buildProjectMap(root, new AbortController().signal)
+    assert.ok(map, 'a Maven + Vue folder is a project')
+    const text = formatProjectMap(map).join('\n')
+
+    // Java side: the build, the framework, and the annotation counts are facts
+    // read from files, in the output, with no guesswork required of the model.
+    assert.match(text, /Maven Java project/)
+    assert.match(text, /recipe-backend/)
+    assert.match(text, /Spring Boot 3\.2\.5/)
+    assert.match(text, /mybatis-plus/)
+    assert.match(text, /RecipeApplication/)
+    assert.match(text, /2 @RestController \(RecipeController, UserController\)/)
+    // Vue side: framework + version + deps, replacing "似乎是前端部分".
+    assert.match(text, /Vue 3 \+ Vite/)
+    assert.match(text, /element-plus/)
+    assert.match(text, /1 \.vue/)
+    assert.match(text, /README title: AI 智能做菜系统/)
+
+    // `list` output carries the map, so whichever discovery path the model
+    // takes, the facts are already in its context.
+    const r = await listTool.execute({ path: root }, toolContext(root))
+    assert.ok(!r.isError, `list errored: ${r.content}`)
+    assert.match(r.content, /Project map/)
+    assert.match(r.content, /Spring Boot 3\.2\.5/)
+    assert.match(r.content, /Vue 3/)
+
+    // Not a project: null, so a plain photo folder never sees this section.
+    const plain = await mkdtemp(joinPath(os.tmpdir(), 'harness-repomap-plain-'))
+    try {
+      await writeFile(joinPath(plain, 'a.jpg'), 'x')
+      assert.equal(await buildProjectMap(plain, new AbortController().signal), null)
+    } finally {
+      await rm(plain, { recursive: true, force: true })
+    }
   } finally {
     await rm(root, { recursive: true, force: true })
   }

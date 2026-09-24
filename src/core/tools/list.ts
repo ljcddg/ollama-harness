@@ -26,6 +26,7 @@ import { basename, join } from 'node:path'
 import type { Tool, ToolResult } from './types.js'
 import { guardOutside, NOISE_DIRS, withCommas } from './files.js'
 import { resolveToolPath } from './paths.js'
+import { buildProjectMap, formatProjectMap } from './repo-map.js'
 
 /** Hard stop so scanning a huge tree cannot wedge the turn. */
 const MAX_ENTRIES = 20_000
@@ -404,6 +405,14 @@ export async function buildDirectoryOverview(
   if (markers.length > 0) {
     lines.push('', `Marker files at the top level: ${markers.join(', ')}`)
   }
+
+  // The L0 project map. `list` alone answers "what shape is this folder"; the
+  // map answers "what IS this project" — from pom.xml / package.json / Java
+  // annotations the harness reads offline, so the model states facts instead of
+  // guessing ("似乎是前端"). It comes after the structure because it is the
+  // conclusion the structure points at.
+  const map = await buildProjectMap(absolute, signal)
+  if (map) lines.push('', ...formatProjectMap(map))
   if (out.skipped.size > 0) {
     const names = [...out.skipped].sort()
     lines.push('', `Skipped (dependency/build noise — NOT counted above): ${names.map((n) => `${n}/`).join(', ')}`)
