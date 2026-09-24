@@ -2408,73 +2408,89 @@ await test('a reviewer that fails to run lets the turn end instead of trapping i
   assert.equal(end.data.reason.kind, 'stop', 'a broken reviewer does not hold the turn open')
 })
 
-console.log('\ntask list (`todo`)')
+console.log('\ntask list (`todo_write`)')
 
-test('the todo list is read back out of the tool call, in every shape a model sends', async () => {
-  // The shape is the part a small model gets wrong, so all three forms mean the
-  // same list. Rejecting the sloppier ones would only buy a checklist that never
-  // gets written — which is the failure this tool exists to fix.
+test('an invalid task list is rejected with the offending entry named', async () => {
+  // Strict on purpose: this list is what gets written to the log, so a version
+  // the harness silently repaired would stop being a record of what the model
+  // decided. Every rejection has to be specific enough to act on.
   const { parseTodos } = await import('../dist/shared/session.js')
-  assert.deepEqual(parseTodos([{ content: 'write pom.xml', status: 'pending' }]), [
+  const ok = parseTodos([
     { content: 'write pom.xml', status: 'pending' },
+    { content: '  add application.yml  ', status: 'in_progress' },
   ])
-  assert.deepEqual(parseTodos(['write pom.xml', 'add application.yml']), [
+  assert.equal(ok.ok, true)
+  assert.deepEqual(ok.todos, [
     { content: 'write pom.xml', status: 'pending' },
-    { content: 'add application.yml', status: 'pending' },
+    { content: 'add application.yml', status: 'in_progress' },
   ])
-  assert.deepEqual(parseTodos('- [x] create folders\n- [>] write pom.xml\n- [ ] add config'), [
-    { content: 'create folders', status: 'completed' },
-    { content: 'write pom.xml', status: 'in_progress' },
-    { content: 'add config', status: 'pending' },
-  ])
-  // Unreadable input reads as null, so the tool can SAY so instead of silently
-  // recording an empty list and reporting success.
-  assert.equal(parseTodos(undefined), null)
-  assert.equal(parseTodos(42), null)
-  assert.equal(parseTodos([{ content: 'x', status: 'done' }]), null, 'an invented status is not a status')
-  assert.equal(parseTodos([{ content: '   ', status: 'pending' }]), null)
-})
 
-test('the current task list is the last todo call that SUCCEEDED', async () => {
-  const { deriveTodos } = await import('../dist/shared/session.js')
-  assert.deepEqual(deriveTodos([]), [])
-  const events = [
-    ev(1, 'tool/start', { callId: 'c1', name: 'todo', arguments: { todos: [{ content: 'first', status: 'pending' }] } }),
-    ev(2, 'tool/end', { callId: 'c1', name: 'todo', isError: false, content: 'ok', durationMs: 1 }),
-    // A call that failed must not replace a list that worked.
-    ev(3, 'tool/start', { callId: 'c2', name: 'todo', arguments: { todos: [{ content: 'second', status: 'completed' }] } }),
-    ev(4, 'tool/end', { callId: 'c2', name: 'todo', isError: true, content: 'bad', durationMs: 1 }),
+  const rejects = [
+    [[{ content: 'x', status: 'pending' }, { content: 'x', status: 'completed' }], 'duplicate content'],
+    [[{ content: '   ', status: 'pending' }], 'content'],
+    [[{ content: 'x', status: 'done' }], 'status'],
+    [[{ content: 'x', status: 'pending', note: 'extra' }], 'unknown field'],
+    [
+      [{ content: 'a', status: 'in_progress' }, { content: 'b', status: 'in_progress' }],
+      'at most one task may be in_progress',
+    ],
+    ['a string is not a list', '`todos` must be an array'],
+    [42, '`todos` must be an array'],
   ]
-  assert.deepEqual(
-    deriveTodos(events),
-    [{ content: 'first', status: 'pending' }],
-    'a failed call must not clobber a good list',
-  )
-  // The next successful call replaces the list wholesale — no ids, no merging.
-  events.push(ev(5, 'tool/start', { callId: 'c3', name: 'todo', arguments: { todos: ['one', 'two'] } }))
-  events.push(ev(6, 'tool/end', { callId: 'c3', name: 'todo', isError: false, content: 'ok', durationMs: 1 }))
-  assert.deepEqual(deriveTodos(events), [
-    { content: 'one', status: 'pending' },
-    { content: 'two', status: 'pending' },
-  ])
-  // Another tool's calls are not the task list.
-  assert.deepEqual(deriveTodos([ev(7, 'tool/end', { callId: 'zz', name: 'read', isError: false, content: '', durationMs: 1 })]), [])
+  for (const [input, expected] of rejects) {
+    const result = parseTodos(input)
+    assert.equal(result.ok, false, `should have been rejected: ${JSON.stringify(input)}`)
+    assert.match(result.error, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  }
 })
 
-test('the todo result says how many items are still open', async () => {
-  const { formatTodos } = await import('../dist/core/tools/todo.js')
-  const text = formatTodos([
-    { content: 'write pom.xml', status: 'completed' },
-    { content: 'add application.yml', status: 'pending' },
+test('a rejected todo update records nothing, so it cannot erase a good list', async () => {
+  const { todoTool } = await import('../dist/core/tools/todo.js')
+  const emitted = []
+  const ctx = {
+    cwd: process.cwd(),
+    signal: new AbortController().signal,
+    callId: 'c1',
+    requestApproval: async () => true,
+    emit: (event) => emitted.push(event),
+  }
+  const good = await todoTool.execute({ todos: [{ content: 'write pom.xml', status: 'pending' }] }, ctx)
+  assert.equal(good.isError, undefined)
+  assert.equal(good.content, 'Updated todo list: 1 pending, 0 in progress, 0 completed.')
+  assert.deepEqual(emitted, [
+    { type: 'todo/write', data: { todos: [{ content: 'write pom.xml', status: 'pending' }] } },
   ])
-  assert.match(text, /1\/2 completed/)
-  assert.match(text, /\[x\] 1\. write pom\.xml/)
-  assert.match(text, /\[ \] 2\. add application\.yml/)
-  assert.match(text, /1 of 2 still open/)
-  // A finished list stops nagging, or the warning becomes noise the model learns to skip.
-  const done = formatTodos([{ content: 'a', status: 'completed' }])
-  assert.match(done, /Every item is completed/)
-  assert.ok(!/still open/.test(done), 'a completed list must not carry the open-items warning')
+
+  emitted.length = 0
+  const bad = await todoTool.execute(
+    { todos: [{ content: 'same', status: 'pending' }, { content: 'same', status: 'completed' }] },
+    ctx,
+  )
+  assert.equal(bad.isError, true)
+  assert.match(bad.content, /^Error: invalid todos: duplicate content/)
+  assert.deepEqual(emitted, [], 'a rejected update must not append anything to the log')
+})
+
+test('the current plan is dropped when the next turn begins', async () => {
+  // Turn-scoped like DeepSeek Harness's `todos` projection: the list is the plan
+  // for the work in front of the model, and a new user turn is new work. A stale
+  // plan outliving its job would be the harness misleading the model.
+  const { deriveTodos } = await import('../dist/shared/session.js')
+  const list = [{ content: 'scaffold the project', status: 'in_progress' }]
+  assert.deepEqual(deriveTodos([]), [])
+  assert.deepEqual(deriveTodos([ev(1, 'todo/write', { todos: list })]), list)
+  // Within the same turn the newest write wins, wholesale.
+  const later = [{ content: 'scaffold the project', status: 'completed' }]
+  assert.deepEqual(
+    deriveTodos([ev(1, 'todo/write', { todos: list }), ev(2, 'todo/write', { todos: later })]),
+    later,
+  )
+  // The next turn starts from nothing, and keeps whatever THAT turn writes.
+  assert.deepEqual(deriveTodos([ev(1, 'todo/write', { todos: list }), ev(2, 'turn/start', { turn: 2 })]), [])
+  assert.deepEqual(
+    deriveTodos([ev(1, 'todo/write', { todos: list }), ev(2, 'turn/start', { turn: 2 }), ev(3, 'todo/write', { todos: later })]),
+    later,
+  )
 })
 
 console.log('\npreload / IPC channel agreement')

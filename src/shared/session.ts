@@ -94,6 +94,17 @@ export type SessionEvent =
         round: number
       }
     })
+  /**
+   * The model rewrote its task list. Whole-list replacement, log-only.
+   *
+   * Its own event rather than something reconstructed from the tool call's
+   * arguments, so the plan is a first-class fact in the only record there is.
+   * `deriveMessages` ignores it: a list the model wrote is state, not something
+   * the model has to be asked to reply to.
+   *
+   * The fold drops it when the NEXT turn begins — see `deriveTodos`.
+   */
+  | (EventBase & { type: 'todo/write'; data: { todos: TodoItem[] } })
 
 export type SessionEventType = SessionEvent['type']
 
@@ -346,111 +357,97 @@ export interface TodoItem {
 
 const TODO_STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'completed']
 
-/** Status implied by a `[ ]` / `[>]` / `[x]` marker, or null when there is none. */
-function statusFromMark(mark: string | undefined): TodoStatus | null {
-  if (mark === undefined) return null
-  const key = mark.trim().toLowerCase()
-  if (key === '') return 'pending'
-  if (key === 'x') return 'completed'
-  if (key === '>') return 'in_progress'
-  if (key === 'pending' || key === 'in_progress' || key === 'completed') return key
-  return null
-}
-
 /**
- * Read a `todo` call's argument as a list, or null when nothing usable is there.
+ * How many entries may be `in_progress` at once.
  *
- * Deliberately forgiving about the SHAPE, because the shape is the part a small
- * model gets wrong. Three forms are accepted, all meaning the same list:
- *
- * 1. `[{ content, status }]` — the documented form.
- * 2. `["write pom.xml", "add application.yml"]` — bare strings, all pending.
- * 3. One newline-separated string, each line optionally marked `[ ]` / `[>]` / `[x]`.
- *
- * A rejected call is not a silent no-op: the tool turns null into a model-facing
- * message, which is the same principle as the rest of the harness — make the call
- * succeed rather than make the failure descriptive. Strictness here would only
- * buy a checklist that never gets written, which is the failure being fixed.
- *
- * Values arrive from the log as `unknown`, so this must never throw on a replayed
- * session written by an older build.
+ * DeepSeek Harness makes this a required deployment setting, because an agent
+ * that genuinely runs work concurrently — subagents, background commands,
+ * workflow fan-out — has several live tasks. This harness runs one tool at a
+ * time inside one loop, so the single-active discipline is not a policy to
+ * choose here, it is a fact about the runner. A setting with exactly one correct
+ * value is a worse thing than a constant: it invites a misconfiguration that
+ * only shows up as a rejected tool call.
  */
-export function parseTodos(raw: unknown): TodoItem[] | null {
-  if (raw === null || raw === undefined) return null
+const MAX_IN_PROGRESS = 1
 
-  if (typeof raw === 'string') {
-    const items: TodoItem[] = []
-    for (const line of raw.split(/\r?\n/)) {
-      const parsed = parseTodoLine(line)
-      if (parsed !== null) items.push(parsed)
-    }
-    return items.length > 0 ? items : null
+/** Either the canonical list, or the reason the input is not one. */
+export type TodoParse = { ok: true; todos: TodoItem[] } | { ok: false; error: string }
+
+/**
+ * Read a `todo_write` call's argument as a canonical list.
+ *
+ * Strict on purpose, and deliberately does NOT try to rescue a sloppy shape.
+ * This list is what gets written to the log, so a version the harness silently
+ * repaired would stop being a record of what the model actually decided — and
+ * the model would never learn its shape was wrong. Every rejection names the
+ * offending entry, so the next call can be fixed rather than guessed at. That is
+ * the same trade `edit` makes: fail loudly at a stale view rather than do
+ * something plausible.
+ */
+export function parseTodos(raw: unknown): TodoParse {
+  if (!Array.isArray(raw)) {
+    return { ok: false, error: '`todos` must be an array of { content, status }' }
   }
-
-  if (!Array.isArray(raw)) return null
-  const out: TodoItem[] = []
+  const todos: TodoItem[] = []
+  const seen = new Set<string>()
+  let active = 0
   for (const entry of raw) {
-    if (typeof entry === 'string') {
-      const parsed = parseTodoLine(entry)
-      if (parsed === null) return null
-      out.push(parsed)
-      continue
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return { ok: false, error: '`todos` must be an array of { content, status }' }
     }
-    if (typeof entry !== 'object' || entry === null) return null
-    const { content, status } = entry as Record<string, unknown>
-    if (typeof content !== 'string' || content.trim().length === 0) return null
-    // An entry that carries the marker inside its text is still usable.
-    const inline = parseTodoLine(content)
-    if (status === undefined && inline !== null) {
-      out.push(inline)
-      continue
+    const record = entry as Record<string, unknown>
+    // The logged snapshot must equal what the model believes it wrote, so an
+    // entry carrying fields beyond the two documented ones is rejected rather
+    // than quietly flattened.
+    const unknown = Object.keys(record).filter((key) => key !== 'content' && key !== 'status')
+    if (unknown.length > 0) {
+      return { ok: false, error: `invalid todo: unknown field ${JSON.stringify(unknown[0])}` }
     }
-    if (typeof status !== 'string' || !TODO_STATUSES.includes(status as TodoStatus)) return null
-    out.push({ content: content.trim(), status: status as TodoStatus })
+    const content = typeof record['content'] === 'string' ? record['content'].trim() : ''
+    if (content.length === 0) {
+      return { ok: false, error: 'invalid todo: `content` must be a non-empty string' }
+    }
+    // Entries carry no ids, so two identical lines are two indistinguishable
+    // tasks — the model cannot tick off one of them.
+    if (seen.has(content)) {
+      return { ok: false, error: `invalid todos: duplicate content ${JSON.stringify(content)}` }
+    }
+    seen.add(content)
+    const status = record['status']
+    if (typeof status !== 'string' || !TODO_STATUSES.includes(status as TodoStatus)) {
+      return { ok: false, error: `invalid todo: \`status\` must be one of ${TODO_STATUSES.join(' | ')}` }
+    }
+    if (status === 'in_progress') active++
+    todos.push({ content, status: status as TodoStatus })
   }
-  return out
-}
-
-/** One `[ ]`/`[>]`/`[x]` list line (with or without a leading bullet), or null. */
-function parseTodoLine(line: string): TodoItem | null {
-  const text = line.trim()
-  if (text.length === 0) return null
-  const match = /^(?:[-*+]\s*)?\[([^\]]*)\]\s*(.+)$/.exec(text)
-  if (match) {
-    const status = statusFromMark(match[1])
-    const content = (match[2] ?? '').trim()
-    if (status !== null && content.length > 0) return { content, status }
-    return null
+  if (active > MAX_IN_PROGRESS) {
+    return { ok: false, error: `invalid todos: at most one task may be in_progress (got ${active})` }
   }
-  const bare = text.replace(/^[-*+]\s*/, '').trim()
-  return bare.length > 0 ? { content: bare, status: 'pending' } : null
+  return { ok: true, todos }
 }
 
 /**
- * The model's current task list: the argument of the last `todo` call that succeeded.
+ * The plan in force right now: the newest recorded list, dropped when the NEXT
+ * turn begins.
  *
- * Derived, not stored — the same rule as every other view in this file. The tool
- * replaces the list wholesale on every call, so the newest SUCCESSFUL call IS the
- * current list; a later failed call must not erase one that worked, which is why
- * the two events are paired by callId rather than by order alone.
+ * Turn-scoped, like DeepSeek Harness's `todos` projection, and for the same
+ * reason: the list is the plan for the work in front of the model, and a new
+ * user turn is new work. A previous turn's checklist outliving its job is worse
+ * than losing it — the model would read a stale plan as the current one, and the
+ * harness would be the thing that misled it.
  *
- * Needs no new event type: tool calls and results are already in the log, so the
- * list survives resume and replays exactly as written.
+ * Folded from `todo/write` rather than from a tool call's arguments, so the list
+ * is a first-class entry in the log instead of something reconstructed by
+ * re-parsing a tool call.
  */
 export function deriveTodos(events: readonly SessionEvent[]): TodoItem[] {
-  const byCall = new Map<ToolCallId, TodoItem[]>()
-  for (const event of events) {
-    if (event.type !== 'tool/start' || event.data.name !== 'todo') continue
-    const args = event.data.arguments
-    if (typeof args !== 'object' || args === null) continue
-    const parsed = parseTodos((args as Record<string, unknown>)['todos'])
-    if (parsed !== null) byCall.set(event.data.callId, parsed)
-  }
   let current: TodoItem[] = []
   for (const event of events) {
-    if (event.type !== 'tool/end' || event.data.isError) continue
-    const parsed = byCall.get(event.data.callId)
-    if (parsed !== undefined) current = parsed
+    if (event.type === 'turn/start') {
+      current = []
+      continue
+    }
+    if (event.type === 'todo/write') current = event.data.todos
   }
   return current
 }

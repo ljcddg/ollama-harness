@@ -741,6 +741,11 @@ async function executeOne(call: ToolCallBlock, input: ExecuteInput): Promise<voi
         options.events.onPhase('tool')
       }
     },
+    // Log-only, and the loop owns the log: a tool records the fact it is
+    // responsible for, never the shape of the log. `deriveMessages` ignores this
+    // event type, so recording state can never add something for the model to
+    // answer.
+    emit: (event) => emit(event),
   }
 
   if (config.approvalRequiredFor.includes(call.name)) {

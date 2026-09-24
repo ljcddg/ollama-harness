@@ -1,75 +1,73 @@
 /**
  * The task-list tool.
  *
- * Why a model needs to be handed a list it wrote itself: asked to "create a
+ * Why a model needs to be handed back the plan it wrote: asked to "create a
  * Spring Boot project", a small model wrote four Java files and two pages and
- * stopped — no `pom.xml`, no config — and nothing in the harness noticed
- * (session 67c03b60). The parts it had planned were fine; the missing ones were
- * never enumerated anywhere, so there was nothing to be short of.
+ * stopped — no `pom.xml`, no configuration — and nothing in the harness noticed
+ * (session 67c03b60). The steps it had decided on were fine. The missing ones
+ * were never written down anywhere, so there was nothing to come up short of.
  *
- * The list is replaced WHOLESALE on every call, like the todo list in DeepSeek
- * Harness. That shape is the point: a partial update needs stable ids and
- * per-item edits, which a small model gets wrong, whereas "send it again, with
- * the current statuses" is one call it can always make.
+ * Shaped after `dsh-tool-todo` in DeepSeek Harness, including where it differs
+ * from the obvious approach:
  *
- * No new event type is needed to persist it — `tool/start` and `tool/end` are
- * already in the log, and `deriveTodos` reads the list back out of them.
+ * - The list is REPLACED wholesale on every call. A partial update needs stable
+ *   ids and per-entry edits, which a small model gets wrong; "send it again with
+ *   the current statuses" is one call it can always make.
+ * - Validation is strict and loud, and the rejected shapes are named. The list is
+ *   written to the log, so a silently repaired one would stop being a record of
+ *   what the model decided.
+ * - The result is a count line, not the list. The list is state, and state lives
+ *   in the `todo/write` event where the main process and the UI can both fold it.
  */
 
-import type { TodoItem, TodoStatus } from '../../shared/session.js'
+import type { TodoItem } from '../../shared/session.js'
 import { parseTodos } from '../../shared/session.js'
-import type { Tool, ToolResult } from './types.js'
+import type { Tool, ToolResult, ToolRunContext } from './types.js'
 
-/**
- * The marker the model both reads and writes.
- *
- * ASCII, not glyphs: the model imitates whatever it sees, and a `✔`/`◻` pair is a
- * font dependency on the renderer side and an imitation risk on the model side.
- * `[x]` is the convention every model has already seen in a README.
- */
-const MARK: Record<TodoStatus, string> = {
-  completed: '[x]',
-  in_progress: '[>]',
-  pending: '[ ]',
-}
+const HEAD =
+  'Record and update the task list for the current work. Send the ENTIRE list on every call — ' +
+  'it REPLACES the previous list (there are no partial updates and no per-entry edits). Use it ' +
+  'to plan multi-step work and to show progress: write one entry per concrete step before you ' +
+  'start. List every part the result needs, including the parts nobody asked for by name — a ' +
+  'project skeleton is not finished without its build file and its configuration. '
 
-/** Render a list the same way the tool asks for it, so the model can imitate it. */
-export function formatTodos(todos: readonly TodoItem[]): string {
-  const done = todos.filter((todo) => todo.status === 'completed').length
-  const open = todos.length - done
-  const body = todos.map((todo, i) => `- ${MARK[todo.status]} ${i + 1}. ${todo.content}`).join('\n')
-  const tail =
-    open === 0
-      ? 'Every item is completed.'
-      : `${open} of ${todos.length} still open. Do not describe the job as finished while an item is ` +
-        'open — do the work, then send the list again. If an item turned out to be unnecessary, ' +
-        'send a list without it rather than leaving it open.'
-  return `Task list (${done}/${todos.length} completed)\n${body}\n\n${tail}`
+const ACTIVE =
+  'Keep AT MOST ONE entry `in_progress` at a time; while work remains, exactly one entry should ' +
+  'be `in_progress`. '
+
+const TAIL =
+  'Mark an entry `completed` the moment it is done (do not batch the completions), and leave no ' +
+  '`in_progress` entry behind once all the work is done. Skip the list entirely for a trivial ' +
+  'single-step task. Statuses: `pending` (not started), `in_progress` (being worked on now), ' +
+  '`completed` (finished).'
+
+const DESCRIPTION = HEAD + ACTIVE + TAIL
+
+/** The counts line the model reads back, mirroring DeepSeek Harness's wording. */
+export function formatTodoCounts(todos: readonly TodoItem[]): string {
+  const count = (status: TodoItem['status']): number => todos.filter((t) => t.status === status).length
+  return (
+    `Updated todo list: ${count('pending')} pending, ` +
+    `${count('in_progress')} in progress, ${count('completed')} completed.`
+  )
 }
 
 export const todoTool: Tool = {
-  name: 'todo',
-  description:
-    'Record the plan for a multi-step job, and keep it current while you work. ' +
-    'Send the WHOLE list every time: it replaces the previous one. ' +
-    'Use it whenever a job takes several steps — scaffolding a project, a change across ' +
-    'several files, anything you would otherwise do from memory. Write every step before you ' +
-    'start (a project skeleton includes its build file and its config), mark one item ' +
-    'in_progress as you work on it, and mark it completed only once you have actually checked it. ' +
-    'Finishing a turn with an open item means the job is not finished.',
+  name: 'todo_write',
+  description: DESCRIPTION,
   parameters: {
     type: 'object',
     properties: {
       todos: {
         type: 'array',
-        description: 'The complete list, in order. Replaces the previous list.',
+        description: 'The COMPLETE task list, replacing any previous list.',
         items: {
           type: 'object',
           properties: {
-            content: { type: 'string', description: 'One imperative step, e.g. "write pom.xml".' },
+            content: { type: 'string', description: 'What the task is — a short imperative line.' },
             status: {
               type: 'string',
-              description: 'One of: pending, in_progress, completed.',
+              description: 'pending (not started) | in_progress (now) | completed (done).',
             },
           },
           required: ['content', 'status'],
@@ -79,25 +77,20 @@ export const todoTool: Tool = {
     required: ['todos'],
   },
   preview: (args) => {
-    const todos = parseTodos(args.todos)
-    if (todos === null) return 'Todo'
-    const done = todos.filter((todo) => todo.status === 'completed').length
-    return `Todo (${done}/${todos.length} completed)`
+    const parsed = parseTodos(args.todos)
+    if (!parsed.ok) return 'Update todo list'
+    const done = parsed.todos.filter((t) => t.status === 'completed').length
+    return `Update todo list (${done}/${parsed.todos.length} completed)`
   },
 
-  async execute(args): Promise<ToolResult> {
-    const todos = parseTodos(args.todos)
-    if (todos === null) {
-      return {
-        content:
-          'Could not read the list. Send `todos` as an array of `{ "content": "...", "status": "..." }`, ' +
-          'where status is one of pending, in_progress, completed.',
-        isError: true,
-      }
+  async execute(args, ctx: ToolRunContext): Promise<ToolResult> {
+    const parsed = parseTodos(args.todos)
+    if (!parsed.ok) {
+      // No event is recorded on a rejected call, so a failed update can never
+      // erase the list a successful one wrote.
+      return { content: `Error: ${parsed.error}`, isError: true }
     }
-    if (todos.length === 0) {
-      return { content: 'The task list is now empty.' }
-    }
-    return { content: formatTodos(todos) }
+    ctx.emit?.({ type: 'todo/write', data: { todos: parsed.todos } })
+    return { content: formatTodoCounts(parsed.todos) }
   },
 }

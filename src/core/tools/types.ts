@@ -11,6 +11,7 @@
  */
 
 import type { ToolCallId, ToolDefinition } from '../../shared/message.js'
+import type { TodoItem } from '../../shared/session.js'
 
 export interface ToolRunContext {
   /** Absolute working directory. Tools MUST NOT escape it without asking. */
@@ -23,6 +24,18 @@ export interface ToolRunContext {
    * a tool may also call it unconditionally for genuinely destructive actions.
    */
   requestApproval(message: string): Promise<boolean>
+  /**
+   * Record a log-only event for this call.
+   *
+   * Deliberately narrow: a tool may record the state it OWNS, not emit arbitrary
+   * events. The one member today is the task list. The tool already returns its
+   * result to the model, but a tool result is prose the model reads, whereas the
+   * event is the fact the log keeps — and only the second can be folded back into
+   * state by the main process and the renderer alike.
+   *
+   * Optional, so a tool body can run in a test or a probe with no log behind it.
+   */
+  emit?(event: { type: 'todo/write'; data: { todos: TodoItem[] } }): void
 }
 
 export interface ToolResult {
