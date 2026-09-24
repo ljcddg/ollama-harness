@@ -189,12 +189,6 @@ try {
     for (const row of card.rows) console.log(`     [${row.cls}] ${row.text}`)
   }
 
-  await send(page.webSocketDebuggerUrl, 'Page.enable', {})
-  const shot = await send(page.webSocketDebuggerUrl, 'Page.captureScreenshot', { format: 'png' })
-  const out = join(ROOT, '.trash', 'changes-preview.png')
-  writeFileSync(out, Buffer.from(shot.data, 'base64'))
-  console.log('\nscreenshot:', out)
-
   const withChanges = cards[0]
   const withNone = cards[1]
   const pass =
@@ -216,6 +210,21 @@ try {
   console.log(`  an empty turn says so         : ${withNone?.summary === '没有文件变动' ? 'yes' : 'NO'}`)
   console.log(`\nRESULT: ${pass ? 'CHANGES RENDER' : 'NOT RENDERING'}`)
   code = pass ? 0 : 2
+
+  // The screenshot is a by-product, not the assertion, so it goes last and is
+  // allowed to fail. A slow frame must not turn a passing probe red: a gate that
+  // cries wolf is one people learn to skim, which costs more than the screenshot
+  // was ever worth.
+  try {
+    await send(page.webSocketDebuggerUrl, 'Page.enable', {})
+    const shot = await send(page.webSocketDebuggerUrl, 'Page.captureScreenshot', { format: 'png' })
+    const out = join(ROOT, '.trash', 'changes-preview.png')
+    writeFileSync(out, Buffer.from(shot.data, 'base64'))
+    console.log('\nscreenshot:', out)
+  } catch (error) {
+    console.log('\nscreenshot skipped:', error.message)
+  }
+
 } catch (error) {
   console.log('probe failed:', error.message)
   code = 1
