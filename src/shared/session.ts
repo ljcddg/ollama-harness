@@ -17,6 +17,9 @@ import type {
   ToolCallId,
 } from './message.js'
 import { asMessageId } from './message.js'
+// Type-only, so this does not create a runtime cycle with ipc.ts (which
+// imports SessionEvent). The review verdict belongs to the log, not the bridge.
+import type { ReviewFinding } from './ipc.js'
 
 export const SESSION_FORMAT_VERSION = 1
 
@@ -64,6 +67,33 @@ export type SessionEvent =
    * the file.
    */
   | (EventBase & { type: 'session/compact'; data: { upTo: number; summary: string } })
+  /**
+   * The self-review gate was consulted, and this is what it decided.
+   *
+   * Recorded on EVERY path, including the two where the gate did nothing:
+   * `skipped` (no tool ran, so there was no evidence to audit) and
+   * `unavailable` (the reviewer itself failed to run). Without those, "the
+   * reviewer agreed" and "the reviewer was never reached" would leave the
+   * same empty gap in the only record there is of why a turn was allowed to
+   * end — which is how a half-finished answer once shipped looking finished.
+   *
+   * `round` is 1-based: how many times the reviewer has been asked this turn,
+   * so a session that came close to the cap shows it.
+   *
+   * Deliberately NOT a message. `deriveMessages` ignores it, so a verdict
+   * never becomes something the model is asked to reply to.
+   */
+  | (EventBase & {
+      type: 'review/result'
+      data: {
+        turn: number
+        step: number
+        outcome: 'match' | 'partial' | 'mismatch' | 'unavailable' | 'skipped'
+        summary: string
+        findings: ReviewFinding[]
+        round: number
+      }
+    })
 
 export type SessionEventType = SessionEvent['type']
 

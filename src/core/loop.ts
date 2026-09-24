@@ -448,6 +448,21 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
           })
           if (signal.aborted) return finishTurn({ kind: 'aborted' })
 
+          // Logged either way, before anything acts on the verdict. This gate
+          // decides whether the turn may end, so a verdict that never reaches
+          // the log leaves the one record there is unable to say why it ended.
+          emit({
+            type: 'review/result',
+            data: {
+              turn,
+              step,
+              outcome: review ? review.verdict : 'unavailable',
+              summary: review?.summary ?? '',
+              findings: review?.findings ?? [],
+              round: reviewRounds + 1,
+            },
+          })
+
           // A null review means the reviewer itself failed to run. Finishing is
           // the honest outcome — the alternative is punishing the model for the
           // harness's error, on a turn that may well be complete.
@@ -488,6 +503,16 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
             emit({ type: 'step/end', data: { turn, step, reason: { kind: 'error', failure } } })
             return finishTurn({ kind: 'error', failure })
           }
+        } else {
+          // The gate was consulted and stood down: with no tool run there is no
+          // evidence for an evidence-based reviewer to check. Recorded rather
+          // than left silent, so "not consulted" never looks like "not reached" —
+          // the difference between a turn the gate skipped and a turn that ended
+          // before the gate ever ran.
+          emit({
+            type: 'review/result',
+            data: { turn, step, outcome: 'skipped', summary: '', findings: [], round: 0 },
+          })
         }
 
         const reason: FinishReason = outcome.finishReason?.kind === 'max-tokens' ? { kind: 'max-tokens' } : { kind: 'stop' }

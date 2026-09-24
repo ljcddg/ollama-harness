@@ -1741,6 +1741,10 @@ const toolStep = (callId) => [
 const reviewSays = (verdict, findings = []) =>
   JSON.stringify({ verdict, summary: `verdict is ${verdict}`, findings })
 
+/** The gate's verdicts, in order, exactly as the log recorded them. */
+const reviewOutcomes = (events) =>
+  events.filter((e) => e.type === 'review/result').map((e) => e.data.outcome)
+
 /**
  * One adapter driving both halves of the gate.
  *
@@ -1810,6 +1814,8 @@ async function runGateTurn({ steps, reviews, userText, maxSteps = 8 }) {
     adapter,
     events,
     end: events.find((e) => e.type === 'turn/end'),
+    /** One entry per consultation, in order. Empty means never consulted. */
+    verdicts: reviewOutcomes(events),
     corrections: (name) =>
       events.filter((e) => e.type === 'user/message' && e.data.message.source?.name === name),
   }
@@ -1819,7 +1825,7 @@ await test('a turn that did work ends when the reviewer agrees, not when tools s
   // The regression this locks: the request names a path, so before the
   // turn-level PATH_HINT fix a turn like this died as UNBACKED_CLAIM no matter
   // how much work it did. A tool ran and the reviewer said match — so it ends.
-  const { adapter, events, end, corrections } = await runGateTurn({
+  const { adapter, events, end, corrections, verdicts } = await runGateTurn({
     steps: [toolStep('call-1'), textStep('目录里有两个文件：a.txt 和 b.txt。')],
     reviews: [reviewSays('match', [{ requirement: '列出目录', status: 'met', evidence: 'stub_read' }])],
     userText: '看看 D:\\desktop1\\论文 里有什么',
@@ -1828,6 +1834,7 @@ await test('a turn that did work ends when the reviewer agrees, not when tools s
   assert.equal(end.data.reason.kind, 'stop', 'a reviewed turn ends as stop')
   assert.equal(adapter.stepCalls, 2, 'one tool step, then one answering step')
   assert.equal(adapter.reviewCalls, 1, 'the gate reviewed exactly once')
+  assert.deepEqual(verdicts, ['match'], 'the verdict is in the log, not only in memory')
   assert.deepEqual(corrections('review-gate'), [], 'a passing review corrects nothing')
   assert.deepEqual(
     corrections('claim-guard'),
@@ -1841,7 +1848,7 @@ await test('a turn that did work ends when the reviewer agrees, not when tools s
 })
 
 await test('a rejected review is fed back and the next attempt can pass', async () => {
-  const { adapter, end, corrections } = await runGateTurn({
+  const { adapter, end, corrections, verdicts } = await runGateTurn({
     steps: [
       toolStep('call-1'),
       textStep('任务已经完成了。'),
@@ -1863,6 +1870,7 @@ await test('a rejected review is fed back and the next attempt can pass', async 
     'the open finding is named back to the model',
   )
   assert.equal(adapter.stepCalls, 4, 'the model got to work again instead of the turn ending')
+  assert.deepEqual(verdicts, ['partial', 'match'], 'both rounds are recorded, in order')
   assert.equal(end.data.reason.kind, 'stop', 'the turn ends once the reviewer agrees')
 })
 
@@ -1870,7 +1878,7 @@ await test('a reviewer that never agrees hands the findings over instead of faki
   const stallReview = reviewSays('mismatch', [
     { requirement: '跑通测试', status: 'missing', evidence: '没有看到测试输出' },
   ])
-  const { adapter, end, corrections } = await runGateTurn({
+  const { adapter, end, corrections, verdicts } = await runGateTurn({
     steps: [
       toolStep('call-1'),
       textStep('全部完成了。'),
@@ -1890,6 +1898,11 @@ await test('a reviewer that never agrees hands the findings over instead of faki
     'MAX_REVIEW_ROUNDS is 3 corrections plus the verdict that finally stops it',
   )
   assert.equal(corrections('review-gate').length, 3, 'three chances, then it escalates')
+  assert.deepEqual(
+    verdicts,
+    ['mismatch', 'mismatch', 'mismatch', 'mismatch'],
+    'every refusal is on the record, including the one that stopped it',
+  )
   // The message has to carry what is missing, not just the fact of failure.
   assert.match(end.data.reason.failure.message, /跑通测试/)
 })
@@ -1898,19 +1911,24 @@ await test('a conversational answer is not routed through the gate', async () =>
   // The boundary, pinned so nobody removes it by accident: an evidence-based
   // reviewer answers "无法确认" to a purely conversational reply, so gating one
   // would correct a perfectly good answer until the rounds ran out.
-  const { adapter, end } = await runGateTurn({
+  const { adapter, end, verdicts } = await runGateTurn({
     steps: [textStep('MD5 是一种哈希算法，把任意长度的输入映射成 128 位摘要。')],
     reviews: [reviewSays('mismatch')],
     userText: '什么是 MD5',
   })
 
   assert.equal(adapter.reviewCalls, 0, 'no tool ran, so there was nothing to review')
+  assert.deepEqual(
+    verdicts,
+    ['skipped'],
+    'the log says the gate stood down, which is not the same as it never running',
+  )
   assert.equal(end.data.reason.kind, 'stop', 'the answer is returned as-is')
 })
 
 await test('a guard out of nudges defers to the reviewer when the turn did work', async () => {
   const denial = '我无法直接访问您的本地文件系统。'
-  const { adapter, end, corrections } = await runGateTurn({
+  const { adapter, end, corrections, verdicts } = await runGateTurn({
     steps: [toolStep('call-1'), textStep(denial), textStep(denial), textStep(denial)],
     reviews: [reviewSays('match')],
     userText: '分析这个项目',
@@ -1919,6 +1937,7 @@ await test('a guard out of nudges defers to the reviewer when the turn did work'
   assert.equal(corrections('capability-guard').length, 2, 'the guard still gets its two nudges')
   assert.equal(adapter.stepCalls, 4, 'the third denial did not end the turn')
   assert.equal(adapter.reviewCalls, 1, 'it was deferred to the reviewer instead')
+  assert.deepEqual(verdicts, ['match'], 'the deferral shows up as a real consultation')
   assert.equal(
     end.data.reason.kind,
     'stop',
@@ -1931,7 +1950,7 @@ await test('a guard out of nudges with no work still reports the original failur
   // to review, so the guard's diagnosis stands and the loop does not spend a
   // reviewer call on an empty turn.
   const denial = '我无法直接访问您的本地文件系统。'
-  const { adapter, end } = await runGateTurn({
+  const { adapter, end, verdicts } = await runGateTurn({
     steps: [textStep(denial), textStep(denial), textStep(denial)],
     reviews: [reviewSays('match')],
     userText: '分析这个项目',
@@ -1940,19 +1959,25 @@ await test('a guard out of nudges with no work still reports the original failur
   assert.equal(end.data.reason.kind, 'error')
   assert.equal(end.data.reason.failure.code, 'CAPABILITY_DENIED')
   assert.equal(adapter.reviewCalls, 0, 'nothing ran, so there was nothing to review')
+  assert.deepEqual(
+    verdicts,
+    [],
+    'the guard ended the turn before the gate was ever consulted — no verdict at all',
+  )
 })
 
 await test('a reviewer that fails to run lets the turn end instead of trapping it', async () => {
   // `runSelfReview` returns null when the reviewer itself errored or was
   // aborted. That is not a rejection: holding the turn open would punish the
   // model for a harness failure, on a turn that may well be finished.
-  const { adapter, end } = await runGateTurn({
+  const { adapter, end, verdicts } = await runGateTurn({
     steps: [toolStep('call-1'), textStep('分析完了，这个项目有三个模块。')],
     reviews: [{ error: true }],
     userText: '分析这个项目',
   })
 
   assert.equal(adapter.reviewCalls, 1, 'the gate did run — this is not the no-tool path')
+  assert.deepEqual(verdicts, ['unavailable'], 'recorded as unavailable, never as a pass')
   assert.equal(end.data.reason.kind, 'stop', 'a broken reviewer does not hold the turn open')
 })
 
