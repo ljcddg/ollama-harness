@@ -26,6 +26,42 @@ const MAX_OUTPUT_CHARS = 30_000
 const MAX_OUTPUT_BYTES = 120_000
 const DEFAULT_TIMEOUT_MS = 120_000
 
+/**
+ * Environment names whose values must never reach a child process.
+ *
+ * `bash` executes whatever the model writes, and the harness's own environment
+ * holds the user's credentials. One `env` call (or `set`, on Windows) would
+ * otherwise print them into the transcript, where they persist in the session log
+ * and are replayed into every later request. Matching is a case-insensitive
+ * substring test on the whole name and is deliberately broad: a false positive
+ * costs a command one variable, a false negative leaks a key.
+ *
+ * The name list mirrors the rule DeepSeek Harness documents in its
+ * defensive-patterns guide (`*KEY*`, `*SECRET*`, `*TOKEN*`, `*PASSWORD*`), plus
+ * the two forms that rule misses in practice.
+ */
+const SECRET_ENV_PATTERN = /KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL/i
+
+/**
+ * The environment a child process is allowed to see: the harness's own
+ * environment minus credential-shaped names.
+ *
+ * Essential names (`PATH`, `HOME`, `SystemRoot`, `TEMP`, ...) match no pattern and
+ * pass through. The pagers are pinned so a command cannot block on an interactive
+ * pager the model has no way to answer.
+ */
+export function scrubbedEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined) continue
+    if (SECRET_ENV_PATTERN.test(name)) continue
+    env[name] = value
+  }
+  env['GIT_PAGER'] = 'cat'
+  env['PAGER'] = 'cat'
+  return env
+}
+
 const DANGEROUS_PATTERNS: Array<{ re: RegExp; why: string }> = [
   { re: /\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rf]/i, why: 'recursive or forced delete' },
   { re: /\b(mkfs|fdisk|diskpart)\b/i, why: 'filesystem formatting' },
@@ -120,7 +156,7 @@ function runCommand(
       cwd,
       shell: isWindows ? true : '/bin/bash',
       windowsHide: true,
-      env: { ...process.env, GIT_PAGER: 'cat', PAGER: 'cat' },
+      env: scrubbedEnv(),
     })
 
     // Collect raw bytes and decode ONCE, at the end. Two separate reasons:

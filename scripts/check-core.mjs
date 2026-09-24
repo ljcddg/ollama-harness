@@ -869,6 +869,46 @@ if (process.platform === 'win32') {
   })
 }
 
+test('the shell tool never hands credentials to a child process', async () => {
+  // `bash` runs whatever the model writes, so its inherited environment is the
+  // one place a prompt-injected `env` could print the user's API keys straight
+  // into the transcript. Assert the scrub's shape directly rather than trusting
+  // the spawn call site to have used it.
+  const { scrubbedEnv } = await import('../dist/core/tools/bash.js')
+  const env = scrubbedEnv({
+    PATH: '/usr/bin',
+    HOME: '/home/x',
+    LANG: 'en_US.UTF-8',
+    SystemRoot: 'C:\\Windows',
+    OPENAI_API_KEY: 'sk-leak',
+    GITHUB_TOKEN: 'ghp-leak',
+    MY_SECRET: 'leak',
+    DB_PASSWORD: 'leak',
+    AWS_SECRET_ACCESS_KEY: 'leak',
+    NPM_TOKEN: 'leak',
+    SSH_PASSPHRASE: 'leak',
+    SOME_CREDENTIALS_FILE: 'leak',
+  })
+  // Essential names survive, or every command breaks.
+  assert.equal(env.PATH, '/usr/bin')
+  assert.equal(env.HOME, '/home/x')
+  assert.equal(env.LANG, 'en_US.UTF-8')
+  assert.equal(env.SystemRoot, 'C:\\Windows')
+  // Credential-shaped names do not.
+  const credentialNames = (o) => Object.keys(o).filter((k) => /KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL/i.test(k))
+  assert.deepEqual(credentialNames(env), [], `credential names reached the child: ${credentialNames(env).join(', ')}`)
+  // Pagers are pinned so a command cannot block on an interactive pager.
+  assert.equal(env.GIT_PAGER, 'cat')
+  assert.equal(env.PAGER, 'cat')
+  // The default reads the real process environment, scrubbed — and the machine
+  // running this check must not leak either.
+  assert.deepEqual(
+    credentialNames(scrubbedEnv()),
+    [],
+    `the real environment leaks: ${credentialNames(scrubbedEnv()).join(', ')}`,
+  )
+})
+
 test('routes known document extensions through the decoder', () => {
   for (const path of ['a.pdf', 'a.PDF', 'a.docx', 'a.doc', 'a.odt', 'a.rtf']) {
     assert.equal(isDocumentPath(path), true, `${path} should be treated as a document`)
