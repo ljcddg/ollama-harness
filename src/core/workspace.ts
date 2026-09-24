@@ -136,6 +136,34 @@ export function diffWorkspace(
 export const MAX_LOGGED_PATHS = 40
 
 /**
+ * Tools that cannot leave the working directory different.
+ *
+ * Listed as the NEGATIVE, and everything else is assumed to be able to
+ * write, because the two mistakes are not equally bad. Assuming a read-only
+ * tool may write costs one directory walk and one extra card. Assuming a
+ * writing tool is read-only means a turn that deleted files is measured as
+ * having changed nothing — which is the exact failure this measurement was
+ * built to catch (`del /q *.*` removed two files, printed nothing, exited 0,
+ * and was reported as a cleared directory). A new tool is therefore guarded
+ * from the moment it exists, without anyone having to remember to list it.
+ */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'read',
+  'list',
+  'glob',
+  'grep',
+  'search',
+  'web',
+  'skill',
+  'todo_write',
+])
+
+/** True when running this tool could leave the working directory different. */
+export function mayChangeFiles(toolName: string): boolean {
+  return !READ_ONLY_TOOLS.has(toolName)
+}
+
+/**
  * Render the diff for a reader, whether that is the log, the reviewer or a person.
  *
  * An empty diff is stated rather than omitted. "Nothing on disk changed" is the

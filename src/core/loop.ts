@@ -35,7 +35,15 @@ import type { AppConfig, FileAttachment } from '../shared/ipc.js'
 import { ATTACHMENT_MARKER } from '../shared/ipc.js'
 import { buildSystemPrompt } from './prompt.js'
 import { pruneToolResults, requestChars } from './prune.js'
-import { countChanges, diffWorkspace, formatChanges, MAX_LOGGED_PATHS, snapshotWorkspace } from './workspace.js'
+import {
+  countChanges,
+  diffWorkspace,
+  formatChanges,
+  MAX_LOGGED_PATHS,
+  mayChangeFiles,
+  snapshotWorkspace,
+  type WorkspaceSnapshot,
+} from './workspace.js'
 import { discoverSkills } from './skills.js'
 import {
   buildCapabilityCorrection,
@@ -198,13 +206,22 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
     return appended
   }
 
-  // The working directory as it stands before anything runs. Paired with a second
-  // snapshot when the turn is about to be reviewed, this is the only account of
-  // what changed that does not come from a tool's own output — and a tool's own
-  // output is what has been wrong (`del /q *.*` prints nothing and exits 0, so a
-  // turn that deleted two files and claimed to clear the directory had nothing to
-  // contradict it). See `core/workspace.ts`.
-  const workspaceBefore = await snapshotWorkspace(options.cwd)
+  /**
+   * The working directory as it stood before the first tool that could change
+   * it, or null while no such tool has run.
+   *
+   * Paired with a second snapshot at review time, this is the only account of
+   * what changed that does not come from a tool's own output — and a tool's own
+   * output is what has been wrong (`del /q *.*` prints nothing and exits 0, so a
+   * turn that deleted two files and claimed to clear the directory had nothing
+   * to contradict it). See `core/workspace.ts`.
+   *
+   * Taken lazily, on the way into the call that needs it, for two reasons: a turn
+   * that only reads or searches never pays for the walk, and the "before" is
+   * measured next to the change instead of at the top of a turn that may think
+   * for a minute first.
+   */
+  let workspaceBefore: WorkspaceSnapshot | null = null
 
 
   const maxSteps =
@@ -489,21 +506,31 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
           events.onPhase('thinking')
 
           // Measured before the review, so the reviewer is handed a fact instead of
-          // the model's summary of one. Measured only when tools ran: with none,
-          // nothing can have changed, and saying "no files changed" every time
-          // would be noise rather than evidence.
-          const workspaceAfter = await snapshotWorkspace(options.cwd)
-          const changes = diffWorkspace(workspaceBefore, workspaceAfter)
-          const walkTruncated = workspaceBefore.truncated || workspaceAfter.truncated
-          emit({
-            type: 'workspace/changes',
-            data: {
-              turn,
-              counts: countChanges(changes),
-              paths: changes.slice(0, MAX_LOGGED_PATHS).map((change) => `${change.kind}: ${change.path}`),
-              truncated: walkTruncated || changes.length > MAX_LOGGED_PATHS,
-            },
-          })
+          // the model's summary of one — and only on a turn where a tool that can
+          // change a file actually ran.
+          //
+          // `toolsRanThisTurn` is deliberately not the test. An answer still needs
+          // reviewing when the tool was a search, but a search cannot have changed
+          // a file, so "没有文件变动" underneath it is a card the user reads past
+          // rather than evidence of anything — which is exactly what it looked
+          // like under four consecutive weather answers.
+          let workspaceNote: string | undefined
+          const before = workspaceBefore
+          if (before !== null) {
+            const workspaceAfter = await snapshotWorkspace(options.cwd)
+            const changes = diffWorkspace(before, workspaceAfter)
+            const walkTruncated = before.truncated || workspaceAfter.truncated
+            emit({
+              type: 'workspace/changes',
+              data: {
+                turn,
+                counts: countChanges(changes),
+                paths: changes.slice(0, MAX_LOGGED_PATHS).map((change) => `${change.kind}: ${change.path}`),
+                truncated: walkTruncated || changes.length > MAX_LOGGED_PATHS,
+              },
+            })
+            workspaceNote = formatChanges(changes, walkTruncated)
+          }
 
           const review = await runSelfReview({
             adapter,
@@ -512,7 +539,7 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
             cwd: options.cwd,
             messages: deriveMessages([...options.history, ...appended]),
             userText: options.userText,
-            workspace: formatChanges(changes, walkTruncated),
+            workspace: workspaceNote,
             signal,
           })
           if (signal.aborted) return finishTurn({ kind: 'aborted' })
@@ -622,6 +649,11 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
       events.onPhase('tool')
       for (const call of outcome.toolCalls) {
         if (signal.aborted) break
+        // Before the call, never after: a "before" read once the file has
+        // already changed would measure nothing.
+        if (workspaceBefore === null && mayChangeFiles(call.name)) {
+          workspaceBefore = await snapshotWorkspace(options.cwd)
+        }
         await executeOne(call, { options, emit })
         // Set per call, not from `outcome.toolCalls.length`: a call that was
         // declared and then never run (abort, or a throw in the executor) is

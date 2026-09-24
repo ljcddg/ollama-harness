@@ -1415,6 +1415,96 @@ await test('a turn hands the reviewer what actually changed on disk', async () =
   assert.match(reviewPrompt, /added: new-file\.txt/)
 })
 
+test('a tool is measured unless it is known to be read-only', async () => {
+  const { mayChangeFiles, READ_ONLY_TOOLS } = await import('../dist/core/workspace.js')
+
+  for (const name of ['write', 'edit', 'delete', 'bash']) {
+    assert.equal(mayChangeFiles(name), true, `${name} can change a file and must be measured`)
+  }
+  for (const name of ['read', 'list', 'glob', 'grep', 'search', 'web', 'skill', 'todo_write']) {
+    assert.equal(mayChangeFiles(name), false, `${name} cannot change a file`)
+  }
+
+  // The list is deliberately the NEGATIVE. A whitelist of writers fails open — a
+  // tool nobody remembered to list writes files that go unreported — and failing
+  // open here is the exact bug this measurement exists to catch. So an unknown
+  // name is measured, at the cost of one directory walk.
+  for (const name of ['stub_write', 'some-tool-added-next-year']) {
+    assert.equal(mayChangeFiles(name), true, 'an unknown tool must be measured, not assumed harmless')
+  }
+  assert.ok(
+    READ_ONLY_TOOLS.size >= 8,
+    'this set has to stay in step with the registry; growing a read-only tool that is missing here is a nag, not a lie',
+  )
+})
+
+test('a turn that only reads does not report the directory as unchanged', async () => {
+  // What the user actually saw: "本轮改动 没有文件变动" printed under four
+  // consecutive weather answers. It appeared because the report was gated on
+  // "did any tool run", and a search is a tool — so every read-only turn
+  // announced that no file had changed. True, and useless.
+  const dir = await mkdtemp(joinPath(os.tmpdir(), 'harness-readonly-'))
+  await writeFile(joinPath(dir, 'a.txt'), 'x', 'utf8')
+
+  let step = 0
+  const adapter = {
+    id: 'stub',
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: 'tool-call-delta',
+          index: 0,
+          callId: 'r1',
+          name: 'read',
+          argumentsDelta: '{"path":"a.txt"}',
+        }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+        return
+      }
+      yield { type: 'block-start', index: 0, kind: 'text' }
+      yield { type: 'text-delta', index: 0, text: '今天多云，18 到 26 度。' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+    async listModels() {
+      return []
+    },
+  }
+
+  // The shipped read tool, not an invented one: the assertion is about how
+  // `mayChangeFiles` classifies the tools the app actually registers.
+  const { readTool } = await import('../dist/core/tools/files.js')
+  const tools = new ToolRegistry()
+  tools.register(readTool)
+
+  const events = []
+  try {
+    await runTurn({
+      cwd: dir,
+      model: 'stub',
+      config: { ...DEFAULT_CONFIG, model: 'stub', maxStepsPerTurn: 2 },
+      adapter,
+      tools,
+      history: [],
+      userText: '查一下今天的天气',
+      events: { onEvent: (e) => events.push(e), onPhase: () => {}, requestApproval: async () => true },
+      signal: new AbortController().signal,
+    })
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+
+  assert.ok(
+    events.some((e) => e.type === 'tool/end'),
+    'the read tool did run — this is not the "no tools at all" case',
+  )
+  assert.equal(
+    events.filter((e) => e.type === 'workspace/changes').length,
+    0,
+    'a read-only turn must not announce that no file changed',
+  )
+})
+
 if (process.platform === 'win32') {
   test('the shell tool decodes Windows OEM console output (cp936)', async () => {
     // The real bug: `dir` on a Chinese Windows writes code page 936, so reading
