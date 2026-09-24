@@ -967,6 +967,176 @@ if (process.platform === 'win32') {
   })
 }
 
+console.log('\nrequest trimming (`prune`)')
+
+const mkMessage = (id, role, content) => ({
+  id: asMessageId(id),
+  role,
+  content,
+  source: { kind: 'user' },
+  time: 0,
+})
+
+test('a tool result over budget is trimmed to head + marker + tail', async () => {
+  const { pruneText, PRUNE_MARKER, PRUNE_THRESHOLD_CHARS, PRUNE_HEAD_CHARS, PRUNE_TAIL_CHARS } =
+    await import('../dist/core/prune.js')
+
+  // At the threshold: untouched. Trimming a result the model can still afford to
+  // read would cost information and buy nothing.
+  assert.equal(pruneText('x'.repeat(PRUNE_THRESHOLD_CHARS)), null)
+
+  const big =
+    'H'.repeat(PRUNE_HEAD_CHARS + 100) + 'z'.repeat(5000) + 'T'.repeat(PRUNE_TAIL_CHARS + 100)
+  const trimmed = pruneText(big)
+  assert.ok(trimmed !== null, 'over budget must trim')
+  assert.ok(trimmed.startsWith('H'.repeat(PRUNE_HEAD_CHARS) + '\n\n['), 'head kept verbatim')
+  assert.ok(trimmed.endsWith('T'.repeat(PRUNE_TAIL_CHARS)), 'tail kept verbatim')
+  assert.ok(trimmed.includes(PRUNE_MARKER))
+  const middle = trimmed.slice(PRUNE_HEAD_CHARS + PRUNE_MARKER.length, -PRUNE_TAIL_CHARS)
+  assert.ok(!middle.includes('z'), 'the middle is gone, not merely hidden')
+
+  // Idempotent: head + marker + tail is under the threshold, so a second pass
+  // leaves it alone. That is what lets this run before every step without the
+  // request drifting.
+  assert.equal(pruneText(trimmed), null, 'a trimmed result must not be trimmed again')
+})
+
+test('pruning counts by code point, so it cannot split a surrogate pair', async () => {
+  const { pruneText, PRUNE_MARKER } = await import('../dist/core/prune.js')
+  // U+1F600 is one code point and two UTF-16 units. Slicing by `.length` would
+  // cut it in half and leave a lone surrogate, which some providers reject.
+  const trimmed = pruneText('😀'.repeat(9000))
+  assert.ok(trimmed !== null)
+  const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(trimmed)
+  assert.equal(loneSurrogate, false, 'no half emoji may survive the cut')
+  assert.ok(trimmed.includes(PRUNE_MARKER))
+})
+
+test("pruning rewrites tool results and leaves the model's own words alone", async () => {
+  const { pruneToolResults, PRUNE_MARKER, PRUNE_HEAD_CHARS, PRUNE_TAIL_CHARS } = await import(
+    '../dist/core/prune.js'
+  )
+  const huge = 'y'.repeat(12000)
+  const messages = [
+    mkMessage('m1', 'assistant', [{ type: 'text', text: huge }]),
+    mkMessage('m2', 'tool', [{ type: 'tool-result', callId: 'c1', name: 'read', content: huge, isError: false }]),
+    mkMessage('m3', 'tool', [{ type: 'tool-result', callId: 'c2', name: 'bash', content: 'short', isError: false }]),
+  ]
+
+  const out = pruneToolResults(messages)
+  assert.equal(out.pruned, 1, 'only the oversized tool result is rewritten')
+  assert.equal(out.charsRemoved, huge.length - (PRUNE_HEAD_CHARS + PRUNE_MARKER.length + PRUNE_TAIL_CHARS))
+  // Assistant text is the model's own words; cutting it changes what it believes
+  // it said, so it is out of scope on purpose.
+  assert.equal(out.messages[0].content[0].text, huge, 'assistant text is never touched')
+  assert.equal(out.messages[2].content[0].content, 'short', 'a small result is never touched')
+  assert.notEqual(out.messages[1].content[0].content, huge)
+  // Untouched messages keep their identity, not just their value.
+  assert.equal(out.messages[0], messages[0])
+  assert.equal(out.messages[2], messages[2])
+  // A request with nothing to trim keeps its message objects, so the common step
+  // pays for one pass and no allocation.
+  assert.equal(pruneToolResults(messages.slice(2, 3)).messages[0], messages[2])
+})
+
+test('the request size is measured in the same unit as the budget', async () => {
+  const { requestChars } = await import('../dist/core/prune.js')
+  assert.equal(requestChars([]), 0)
+  const messages = [
+    mkMessage('m1', 'user', [{ type: 'text', text: 'abc' }]),
+    mkMessage('m2', 'assistant', [{ type: 'text', text: 'de' }, { type: 'reasoning', text: 'fg' }]),
+    mkMessage('m3', 'tool', [{ type: 'tool-result', callId: 'c', name: 'read', content: 'hij', isError: false }]),
+  ]
+  // 3 + 2 + 2 + 3. Reasoning counts: it is sent back with the request and costs
+  // the same as visible text.
+  assert.equal(requestChars(messages), 10)
+})
+
+await test('a step over budget trims tool results before the request goes out', async () => {
+  // The wiring, not the arithmetic: dsh gates its pruner on confirmed pressure
+  // and runs it before every step, and the whole reason this layer exists is that
+  // summary compaction cannot run inside a turn at all. So the check is that a
+  // turn with one huge tool result in its history sends the shortened form, and
+  // says so in the log.
+  const sent = []
+  const adapter = {
+    provider: 'stub',
+    async *stream(generate) {
+      sent.push(generate.messages)
+      yield { type: 'block-start', index: 0, kind: 'text' }
+      yield { type: 'text-delta', index: 0, text: 'ok' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+    async listModels() {
+      return []
+    },
+  }
+
+  const huge = 'q'.repeat(30_000)
+  const history = [
+    ev(1, 'tool/start', { callId: 'c1', name: 'read', arguments: { path: 'big.txt' } }),
+    ev(2, 'tool/end', { callId: 'c1', name: 'read', isError: false, content: huge, durationMs: 5 }),
+  ]
+
+  const events = []
+  await runTurn({
+    cwd: '.',
+    model: 'stub',
+    config: { ...DEFAULT_CONFIG, model: 'stub', maxStepsPerTurn: 1 },
+    adapter,
+    tools: createDefaultRegistry(),
+    history,
+    userText: '那个文件说了什么？',
+    events: {
+      onEvent: (e) => events.push(e),
+      onPhase: () => {},
+      requestApproval: async () => true,
+    },
+    signal: new AbortController().signal,
+  })
+
+  const logged = events.find((e) => e.type === 'session/prune')
+  assert.ok(logged !== undefined, 'the trim must reach the log, not just the request')
+  assert.equal(logged.data.pruned, 1)
+  assert.ok(logged.data.charsRemoved > 20_000, `expected a large saving, got ${logged.data.charsRemoved}`)
+
+  // And the model really did receive the shortened text — the whole point is
+  // what the provider is billed for, not what the log holds.
+  const toolResults = sent.flatMap((messages) =>
+    messages.flatMap((m) => m.content).filter((b) => b.type === 'tool-result'),
+  )
+  assert.ok(toolResults.length > 0, 'the turn must have sent the tool result at all')
+  assert.ok(toolResults.every((b) => b.content.length < huge.length), 'no full copy may go out')
+  assert.match(toolResults[0].content, /middle pruned/)
+
+  // Under budget the request is left exactly as derived: no marker, no rewrite.
+  const small = [
+    ev(1, 'tool/start', { callId: 'c2', name: 'read', arguments: { path: 'small.txt' } }),
+    ev(2, 'tool/end', { callId: 'c2', name: 'read', isError: false, content: 'hello', durationMs: 1 }),
+  ]
+  const quiet = []
+  await runTurn({
+    cwd: '.',
+    model: 'stub',
+    config: { ...DEFAULT_CONFIG, model: 'stub', maxStepsPerTurn: 1 },
+    adapter,
+    tools: createDefaultRegistry(),
+    history: small,
+    userText: 'hi',
+    events: {
+      onEvent: (e) => quiet.push(e),
+      onPhase: () => {},
+      requestApproval: async () => true,
+    },
+    signal: new AbortController().signal,
+  })
+  assert.equal(
+    quiet.filter((e) => e.type === 'session/prune').length,
+    0,
+    'below the budget nothing is trimmed',
+  )
+})
+
 if (process.platform === 'win32') {
   test('the shell tool decodes Windows OEM console output (cp936)', async () => {
     // The real bug: `dir` on a Chinese Windows writes code page 936, so reading

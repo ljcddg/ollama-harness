@@ -34,6 +34,7 @@ import { deriveMessages } from '../shared/session.js'
 import type { AppConfig, FileAttachment } from '../shared/ipc.js'
 import { ATTACHMENT_MARKER } from '../shared/ipc.js'
 import { buildSystemPrompt } from './prompt.js'
+import { pruneToolResults, requestChars } from './prune.js'
 import { discoverSkills } from './skills.js'
 import {
   buildCapabilityCorrection,
@@ -245,7 +246,28 @@ export async function runTurn(options: RunTurnOptions): Promise<SessionEvent[]> 
       events.onPhase('thinking')
 
       // The request is rebuilt from the log every step — never carried forward.
-      const messages = deriveMessages([...options.history, ...appended])
+      let messages = deriveMessages([...options.history, ...appended])
+
+      // Trim before the request goes out, gated on pressure the same way dsh
+      // gates its pruner: below the budget nothing is touched, because trimming a
+      // result the model can still afford to read buys nothing and costs
+      // information. Summary compaction cannot do this job — it needs a model
+      // call, so it runs between turns — and a single long turn is exactly where
+      // a request runs away. Session 0b5d68df took ten steps inside one turn and
+      // went from 3 183 to 25 015 input tokens; the summary only landed after the
+      // turn had already failed. This layer needs no model call, so it can run.
+      const budget = config.compactThresholdChars
+      if (Number.isFinite(budget) && budget > 0 && requestChars(messages) > budget) {
+        const outcome = pruneToolResults(messages)
+        if (outcome.pruned > 0) {
+          messages = outcome.messages
+          emit({
+            type: 'session/prune',
+            data: { turn, step, pruned: outcome.pruned, charsRemoved: outcome.charsRemoved },
+          })
+        }
+      }
+
       const systemPrompt = buildSystemPrompt({
         cwd: options.cwd,
         model: options.model,

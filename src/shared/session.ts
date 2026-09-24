@@ -68,6 +68,18 @@ export type SessionEvent =
    */
   | (EventBase & { type: 'session/compact'; data: { upTo: number; summary: string } })
   /**
+   * Oversized tool results were trimmed for one step's request.
+   *
+   * Log-only, the same way `review/result` is: the trimming is a deterministic
+   * function of the log (`core/prune.ts`), so a replay derives the identical
+   * request without reading this. It exists so a person can see THAT it happened
+   * and how much it saved — the one thing a derivation cannot show.
+   */
+  | (EventBase & {
+      type: 'session/prune'
+      data: { turn: number; step: number; pruned: number; charsRemoved: number }
+    })
+  /**
    * The self-review gate was consulted, and this is what it decided.
    *
    * Recorded on EVERY path, including the two where the gate did nothing:
